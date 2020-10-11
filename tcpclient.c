@@ -8,18 +8,17 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
-#define PORT "58000"
-
 int main (int argc, char *argv[]){
 
-int fd,errcode;
+int sockfd,errcode;
 int c;
 ssize_t n;
 socklen_t addrlen;
 struct addrinfo hints,*res;
-struct sockaddr_in addr;
+struct sockaddr_in servaddr;
+char recvline[128];
 char buffer[128];
-char asip[20] = "localhost";
+char asip[50] = "localhost";
 char asport[20] = "58046";
 char fsip[20] = "localhost";
 char fsport[20] = "59046";
@@ -48,35 +47,38 @@ char fsport[20] = "59046";
   }
 
 
+  res= (struct addrinfo*)malloc(sizeof(struct addrinfo));
+  sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  if(sockfd<0)
+    perror("Could not create socket!");
+  bzero(&servaddr, sizeof(servaddr));
+  memset(&hints,0,sizeof(hints));
+  hints.ai_family=AF_INET;
+  hints.ai_socktype=SOCK_STREAM;
 
 
-fd=socket(AF_INET,SOCK_STREAM,0);
-if (fd==-1) exit(1); //error
+  if(getaddrinfo(asip, asport, &hints, &res) < 0 )
+    perror("getaddrinfo");
 
+  if (connect(sockfd, res->ai_addr, res->ai_addrlen) < 0 )
+    perror("Connect:");
+  sprintf(buffer, "LOG 12345 password\n");
 
-memset(&hints,0,sizeof hints);
-hints.ai_family=AF_INET;
-hints.ai_socktype=SOCK_STREAM;
+  int sendbytes= strlen(buffer);
 
-errcode=getaddrinfo("localhost",PORT,&hints,&res);
-if(errcode!=0)/*error*/exit(1);
+  if(write(sockfd, buffer, sendbytes) != sendbytes )
+    perror("Couldn't write to socket!");
 
-n=connect(fd,res->ai_addr,res->ai_addrlen);
-if(n==-1)/*error*/exit(1);
-
-/*
-  Client should work continuosly
-  while(1){
-
+  memset(recvline, 0, 128);
+  int a=0;
+  while( (a= read(sockfd, recvline, 127) > 0)){
+    printf("%s", recvline);
   }
-*/
 
-n=write(fd,"Hello!\n",7);
-if(n==-1)/*error*/exit(1);
+  if (a < 0)
+    perror("Couldn't read");
 
-n=read(fd,buffer,128);
-if(n==-1)/*error*/exit(1);
+  exit(0);
 
-freeaddrinfo(res);
-close(fd);
+
 }
