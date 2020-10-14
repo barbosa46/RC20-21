@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -10,18 +11,19 @@
 
 #include "pd.h"
 
+// TODO: Validation
 
 int fd_client, fd_server, errcode;
 ssize_t n;
 socklen_t addrlen_client, addrlen_server;
 struct addrinfo hints_client, hints_server, *res_client, *res_server;
-struct sockaddr_in adrr_client, addr_server;
+struct sockaddr_in adrr_client, addr_server, sa;
 char buffer[128];
 
-char pdip[16], pdport[6];
-char asip[16], asport[6];
+char pdip[18], pdport[8];
+char asip[18], asport[8];
 
-char uid[6], pass[9];
+char uid[8], pass[10];
 
 int registered_user = 0;
 
@@ -31,30 +33,80 @@ void usage() {
 }
 
 
+void syntax_error(int error) {
+    if (error == IP_INVALID) fputs("Error: Invalid IP address. Exiting...\n", stderr);
+    else if (error == PORT_INVALID) fputs("Error: Invalid port. Exiting...\n", stderr);
+    else if (error == USER) {
+        fputs("Error: UID must be 5 characters long and consist only of numbers. Try again!\n", stderr); return; }
+    else if (error == PASS) {
+        fputs("Error: Password must be 8 characters long and consist only of alphanumeric characters. Try again!\n", stderr); return; }
+    else fputs("Unknown errror. Exiting...\n", stderr);
+
+    exit(1);
+}
+
+
+void message_error(int error) {
+    if (error == REG) fputs("Error: Invalid user ID or password. Try again!\n", stderr);
+    else if (error == UNR) { fputs("Error: Unregister unsuccessful. Exiting...\n", stderr); exit(1); }
+    else if (error == UNK) fputs("Error: Unexpected protocol message. Might not have performed operation\n", stderr);
+    else fputs("Unknown errror. Aborting...\n", stderr);
+}
+
+
+int is_only(int which, char *str) {
+    if (which == NUMERIC) {
+        while (*str) { if (isdigit(*str++) == 0) return 0; }
+        return 1;
+
+    } else if (which == ALPHANUMERIC) {
+        while (*str) { if (isdigit(*str++) == 0 && isalpha(*(str - 1)) == 0) return 0; }
+        return 1;
+
+    } else if (which == IP) {
+        int result = inet_pton(AF_INET, str, &(sa.sin_addr));
+        return result != 0;
+
+    } return 0;
+}
+
+
 void parse_args(int argc, char const *argv[]) {
     int opt;
 
     if (argc == 1 || argc > 8) usage();
 
-    strcpy(pdip, argv[1]);
-    strcpy(pdport, "57046");
-    strcpy(asip, argv[1]);
-    strcpy(asport, "58046");
+    strncpy(pdip, argv[1], 16);
+    strncpy(pdport, "57046", 6);
+    strncpy(asip, argv[1], 16);
+    strncpy(asport, "58046", 6);
+
+    if (!is_only(IP, pdip)) syntax_error(IP_INVALID);
 
     while ((opt = getopt(argc, (char * const*) argv, "d:n:p:")) != -1) {
         if (optarg[0] == '-') usage();
 
         switch (opt) {
             case 'd':
-                strcpy(pdport, optarg);
+                strncpy(pdport, optarg, 6);
+                if (strlen(pdport) == 0 || strlen(pdport) > 5 ||
+                    !is_only(NUMERIC, pdport) || atoi(pdport) > 65535)
+                    syntax_error(PORT_INVALID);
+
                 break;
 
             case 'n':
-                strcpy(asip, optarg);
+                strncpy(asip, optarg, 16);
+                if (!is_only(IP, asip)) syntax_error(IP_INVALID);
+
                 break;
 
             case 'p':
-                strcpy(asport, optarg);
+                strncpy(asport, optarg, 6);
+                if (strlen(asport) == 0 || strlen(asport) > 5 ||
+                    !is_only(NUMERIC, asport) || atoi(asport) > 65535)
+                    syntax_error(PORT_INVALID);
+
                 break;
 
             default:
@@ -66,20 +118,20 @@ void parse_args(int argc, char const *argv[]) {
 
 void connect_to_as() {
     fd_client = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd_client == -1) { fputs("Error: Could not create socket", stderr); exit(1); }
+    if (fd_client == -1) { fputs("Error: Could not create socket. Exiting...\n", stderr); exit(1); }
 
     memset(&hints_client, 0, sizeof hints_client);
     hints_client.ai_family = AF_INET;
     hints_client.ai_socktype = SOCK_DGRAM;
 
     errcode = getaddrinfo(asip, asport, &hints_client, &res_client);
-    if (errcode != 0) { fputs("Error: Could not connect to AS", stderr); exit(1); }
+    if (errcode != 0) { fputs("Error: Could not connect to AS. Exiting...\n", stderr); exit(1); }
 }
 
 
 void setup_pdserver() {
     fd_server = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd_server == -1) { fputs("Error: Could not create socket", stderr); exit(1); }
+    if (fd_server == -1) { fputs("Error: Could not create socket. Exiting...\n", stderr); exit(1); }
 
     memset(&hints_server, 0, sizeof hints_server);
     hints_server.ai_family = AF_INET;
@@ -87,10 +139,10 @@ void setup_pdserver() {
     hints_server.ai_flags = AI_PASSIVE;
 
     errcode = getaddrinfo(NULL, pdport, &hints_server, &res_server);
-    if (errcode != 0) { fputs("Error: Could not get PD address", stderr); exit(1); }
+    if (errcode != 0) { fputs("Error: Could not get PD address. Exiting...\n", stderr); exit(1); }
 
     n = bind(fd_server, res_server->ai_addr, res_server->ai_addrlen);
-    if (n == -1) { fputs("Error: Could not bind socket", stderr); exit(1); }
+    if (n == -1) { fputs("Error: Could not bind socket. Exiting...\n", stderr); exit(1); }
 }
 
 
@@ -112,11 +164,15 @@ void register_user() {
     sprintf(request, "REG %s %s %s %s\n", uid, pass, pdip, pdport);
 
     n = sendto(fd_client, request, strlen(request), 0, res_client->ai_addr, res_client->ai_addrlen);
-    if (n == -1) fputs("Error: Could not send request", stderr);
+    if (n == -1) fputs("Error: Could not send request. Try again!\n", stderr);
 
     addrlen_server = sizeof(addr_server);
     n = recvfrom(fd_client, buffer, 128, 0, (struct sockaddr*) &addr_server, &addrlen_server);
-    if (n == -1) fputs("Error: Could not get response from server", stderr);
+    if (n == -1) fputs("Error: Could not get response from server. Try again!\n", stderr);
+    else buffer[n] = '\0';
+
+    if (strcmp(buffer, "RRG NOK\n") == 0) message_error(REG);
+    if (strcmp(buffer, "ERR\n") == 0) message_error(UNK);
 
     registered_user = 1;
 }
@@ -127,24 +183,33 @@ void unregister_user() {
     sprintf(request, "UNR %s %s\n", uid, pass);
 
     n = sendto(fd_client, request, strlen(request), 0, res_client->ai_addr, res_client->ai_addrlen);
-    if (n == -1) fputs("Error: Could not send request", stderr);
+    if (n == -1) fputs("Error: Could not send request. Try again!\n", stderr);
 
     addrlen_server = sizeof(addr_server);
     n = recvfrom(fd_client, buffer, 128, 0, (struct sockaddr*) &addr_server, &addrlen_server);
-    if (n == -1) fputs("Error: Could not get response from server", stderr);
+    if (n == -1) fputs("Error: Could not get response from server. Try again!\n", stderr);
+    else buffer[n] = '\0';
+
+    if (strcmp(buffer, "RUN NOK\n") == 0) message_error(UNR);
+    if (strcmp(buffer, "ERR\n") == 0) message_error(UNK);
 }
 
 
 void read_commands() {
-    char command[20];
-    char action[5];
+    char command[64];
+    char action[6];
 
     while (1) {
         fgets(command, sizeof command, stdin);
-        sscanf(command, "%s %s %s\n", action, uid, pass);
+        sscanf(command, "%5s %7s %9s\n", action, uid, pass);
 
-        if (strcmp(action, "reg") == 0) register_user();
-        else if (strcmp(action, "exit") == 0) {
+        if (strcmp(action, "reg") == 0) {
+            if (strlen(uid) != 5 || !is_only(NUMERIC, uid)) { syntax_error(USER); continue; }
+            if (strlen(pass) != 8 || !is_only(ALPHANUMERIC, pass)) { syntax_error(PASS); continue; }
+
+            register_user();
+
+        } else if (strcmp(action, "exit") == 0) {
             if (registered_user) unregister_user();
             return;
         } else fputs("Invalid action!\n", stdout);
