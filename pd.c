@@ -27,6 +27,7 @@ char uid[8], pass[10];
 
 int registered_user = 0;
 
+
 void usage() {
     fputs("usage: ./pd PDIP [-d PDport] [-n ASIP] [-p ASport]\n", stderr);
     exit(1);
@@ -124,7 +125,7 @@ void connect_to_as() {
     hints_client.ai_family = AF_INET;
     hints_client.ai_socktype = SOCK_DGRAM;
 
-    errcode = getaddrinfo(asip, asport, &hints_client, &res_client);
+    errcode = getaddrinfo("tejo.tecnico.ulisboa.pt", "58011", &hints_client, &res_client);
     if (errcode != 0) { fputs("Error: Could not connect to AS. Exiting...\n", stderr); exit(1); }
 }
 
@@ -171,11 +172,13 @@ void register_user() {
     if (n == -1) fputs("Error: Could not get response from server. Try again!\n", stderr);
     else buffer[n] = '\0';
 
-    if (strcmp(buffer, "RRG NOK\n") == 0) message_error(REG);
-    if (strcmp(buffer, "ERR\n") == 0) message_error(UNK);
+    if (strcmp(buffer, "RRG OK\n") == 0) fputs("Registration successful!\n", stdout);
+    if (strcmp(buffer, "RRG NOK\n") == 0) { message_error(REG); return; }
+    if (strcmp(buffer, "ERR\n") == 0) { message_error(UNK); return; }
 
     registered_user = 1;
 }
+
 
 void unregister_user() {
     char request[20];
@@ -200,6 +203,8 @@ void read_commands() {
     char action[6];
 
     while (1) {
+        fputs("> ", stdout);
+
         fgets(command, sizeof command, stdin);
         sscanf(command, "%5s %7s %9s\n", action, uid, pass);
 
