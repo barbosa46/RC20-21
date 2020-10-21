@@ -5,14 +5,11 @@
 #include <ctype.h>
 #include <time.h>
 #include <sys/types.h>
-#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-
-#include <errno.h>
 
 #include "user.h"
 
@@ -29,9 +26,10 @@ char asip[18], asport[8];
 char fsip[18], fsport[8];
 
 char uid[6], pass[9];
-int rid = 1;
+int rid = 9999;
 
 int is_logged_in = 0;
+
 
 void usage() {
     fputs("usage: ./user [-n ASIP] [-p ASport] [-m FSIP] [-q FSport]\n", stderr);
@@ -49,6 +47,7 @@ void syntax_error(int error) {
     else if (error == OP_INVALID) {
         fputs("Error: Operation must be a list (L), retrieve (R), upload (U), delete (D) or remove (X). Try again!\n", stderr); return; }
     else if (error == FILE_INVALID) { fputs("Error: Invalid filename. Try again!\n", stderr); return; }
+    else if (error == VC_INVALID) { fputs("Error: Invalid VC. Try again!\n", stderr); return; }
     else fputs("Unknown errror. Exiting...\n", stderr);
 
     exit(1);
@@ -73,6 +72,18 @@ int is_only(int which, char *str) {
         while (*str) { if (isdigit(*str++) == 0 && isalpha(*(str - 1)) == 0) return 0; }
         return 1;
 
+    } else if (which == ALPHA) {
+        while (*str) { if (isalpha(*str++) == 0) return 0; }
+        return 1;
+
+    } else if (which == FILE_CHARS) {
+        while (*str) {
+            if (isdigit(*str++) == 0 && isalpha(*(str - 1)) == 0 && !strchr("-_", *(str - 1)))
+                return 0;
+            }
+
+        return 1;
+
     } else if (which == IP) {
         int result = inet_pton(AF_INET, str, &(sa.sin_addr));
         return result != 0;
@@ -80,12 +91,19 @@ int is_only(int which, char *str) {
     } else if (which == OP) {
         return strlen(str) == 1 && strchr("RUDLX", str[0]);
 
-    } else if (which == FILE) { // FIXME
-        struct stat st;
+    } else if (which == FILE) {
+        int result;
 
-        if (stat(str, &st) < 0) return -1;
+        if (strlen(str) > 24) return 0;
+        if (str[strlen(str) - 4] != '.') return 0;
 
-        return S_ISREG(st.st_mode);
+        str[strlen(str) - 4] = '\0';
+
+        result = is_only(FILE_CHARS, str) && is_only (ALPHA, str + strlen(str) + 1);
+
+        str[strlen(str)] = '.';
+
+        return result;
 
     } return 0;
 }
@@ -198,7 +216,7 @@ void login(char *l_uid, char *l_pass) {
 
     len = strlen(request);
 
-    if (write(fd_as, request, len) != len) fputs("Error: Could not send request. Try again!\n", stderr);
+    if (write(fd_as, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
 
     bzero(response, 128);
     bzero(buffer, 128);
@@ -230,7 +248,7 @@ void request_operation(char *fop, char *fname) {
     len = strlen(request);
     if (len > 42) { fputs("Error: Filename is too long. Try again!\n", stderr); return; }
 
-    if (write(fd_as, request, len) != len) fputs("Error: Could not send request. Try again!\n", stderr);
+    if (write(fd_as, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
 
     bzero(response, 128);
     bzero(buffer, 128);
@@ -249,16 +267,46 @@ void request_operation(char *fop, char *fname) {
 }
 
 
+void val_operation(char *vc) {
+    char request[128], response[128];
+    char pcode[6];
+    int tid;
+    int len;
+
+    bzero(request, 128);
+    sprintf(request, "AUT %s %d %s\n", uid, rid, vc);
+
+    len = strlen(request);
+
+    if (write(fd_as, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
+
+    bzero(response, 128);
+    bzero(buffer, 128);
+    while ((n = read(fd_as, buffer, 127) > 0)) {
+        strncat(response, buffer, 127);
+        if (response[strlen(response) - 1] == '\n') break;
+    }
+
+    if (strcmp(response, "RAU 0\n") == 0) { fputs("Error: Authentication failed. Try again!\n", stderr); return; }
+    if (strcmp(response, "ERR\n") == 0) { message_error(UNK); return; }
+
+    sscanf(response, "%5s %d\n", pcode, &tid);
+
+    if (strcmp(pcode, "RAU") == 0) fprintf(stdout, "Authenticated! (TID = %d)\n", tid);
+    else message_error(UNK);
+
+}
+
+
 void read_commands() {
     char command[128];
     char action[10];
     char arg_1[64], arg_2[64];
-    //char verCode[20];
-
-    bzero(arg_1, 64);
-    bzero(arg_2, 64);
 
     while (1) {
+        bzero(arg_1, 64);
+        bzero(arg_2, 64);
+
         fputs("> ", stdout);
 
         fgets(command, sizeof command, stdin);
@@ -277,14 +325,13 @@ void read_commands() {
 
             request_operation(arg_1, arg_2);
 
-        } /*else if((strcmp(action, "val"))==0){
-           sscanf(command, "%s %s\n", action, verCode);
-           sprintf(buffer, "AUT %s\n", verCode);
-           //int sendbytes= strlen(buffer);
-           while( (n= read(fd_as, recvline, 127) > 0)){
-             printf("%s", recvline);
-           }
-         }
+        } else if ((strcmp(action, "val")) == 0) {
+            if (!is_logged_in) { fputs("Error: No user is logged in. Try again!\n", stderr); continue; }
+            if (strlen(arg_1) != 4 || !is_only(NUMERIC, arg_1)) { syntax_error(VC_INVALID); continue; }
+
+            val_operation(arg_1);
+
+        } /*
          else if((strcmp(action, "retrieve") == 0) || (strcmp(action, "r") == 0)){
             //Connect to FS for action
             sscanf(command, "%s %s\n", action, filename);

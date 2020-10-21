@@ -17,6 +17,7 @@
 
 
 void usage();
+void kill_pdserver(int signum);
 void syntax_error(int error);
 void message_error(int error);
 int is_only(int which, char *str);
@@ -27,6 +28,7 @@ void disconnect_from_as();
 void disconnect_pdserver();
 void register_user();
 void unregister_user();
+void get_vc();
 void read_commands();
 
 #endif /* PD_H */

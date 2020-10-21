@@ -3,21 +3,22 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/prctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 
 #include "pd.h"
 
-// TODO: Validation
 
 int fd_client, fd_server, errcode;
 ssize_t n;
 socklen_t addrlen_client, addrlen_server;
 struct addrinfo hints_client, hints_server, *res_client, *res_server;
-struct sockaddr_in adrr_client, addr_server, sa;
+struct sockaddr_in addr_client, addr_server, sa;
 char buffer[128];
 
 char pdip[18], pdport[8];
@@ -31,6 +32,12 @@ int registered_user = 0;
 void usage() {
     fputs("usage: ./pd PDIP [-d PDport] [-n ASIP] [-p ASport]\n", stderr);
     exit(1);
+}
+
+
+void kill_pdserver(int signum) {
+    disconnect_pdserver();
+    exit(0);
 }
 
 
@@ -161,15 +168,16 @@ void disconnect_pdserver() {
 
 void register_user() {
     char request[42];
+    pid_t pid, ppid;
 
     sprintf(request, "REG %s %s %s %s\n", uid, pass, pdip, pdport);
 
     n = sendto(fd_client, request, strlen(request), 0, res_client->ai_addr, res_client->ai_addrlen);
-    if (n == -1) fputs("Error: Could not send request. Try again!\n", stderr);
+    if (n == -1) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
 
     addrlen_server = sizeof(addr_server);
     n = recvfrom(fd_client, buffer, 128, 0, (struct sockaddr*) &addr_server, &addrlen_server);
-    if (n == -1) fputs("Error: Could not get response from server. Try again!\n", stderr);
+    if (n == -1) { fputs("Error: Could not get response from server. Try again!\n", stderr); return; }
     else buffer[n] = '\0';
 
     if (strcmp(buffer, "RRG OK\n") == 0) fputs("Registration successful!\n", stdout);
@@ -177,6 +185,25 @@ void register_user() {
     if (strcmp(buffer, "ERR\n") == 0) { message_error(UNK); return; }
 
     registered_user = 1;
+
+    ppid = getpid();
+    pid = fork();
+
+    if (pid == -1) { fputs("Error: Could not fork(). Exiting...\n", stderr); exit(1); }
+
+    if (pid) return;
+    else {
+        signal(SIGTERM, kill_pdserver);
+
+        n = prctl(PR_SET_PDEATHSIG, SIGTERM);
+        if (n == -1) { fputs("Error: Could not fork(). Exiting...\n", stderr); exit(1); }
+
+        if (getppid() != ppid) { fputs("Error: Could not fork(). Exiting...\n", stderr); exit(1); }
+
+        setup_pdserver();
+
+        get_vc();
+    }
 }
 
 
@@ -186,15 +213,57 @@ void unregister_user() {
     sprintf(request, "UNR %s %s\n", uid, pass);
 
     n = sendto(fd_client, request, strlen(request), 0, res_client->ai_addr, res_client->ai_addrlen);
-    if (n == -1) fputs("Error: Could not send request. Try again!\n", stderr);
+    if (n == -1) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
 
     addrlen_server = sizeof(addr_server);
     n = recvfrom(fd_client, buffer, 128, 0, (struct sockaddr*) &addr_server, &addrlen_server);
-    if (n == -1) fputs("Error: Could not get response from server. Try again!\n", stderr);
+    if (n == -1) { fputs("Error: Could not get response from server. Try again!\n", stderr); return; }
     else buffer[n] = '\0';
 
     if (strcmp(buffer, "RUN NOK\n") == 0) message_error(UNR);
     if (strcmp(buffer, "ERR\n") == 0) message_error(UNK);
+}
+
+
+void get_vc() {
+    char request[64], response[20];
+    char action[6], v_uid[8], vc[6], fop[4], fname[26];
+    char operation[10];
+
+    while (1) {
+        addrlen_client = sizeof(addr_client);
+        n = recvfrom(fd_server, request, 64, 0, (struct sockaddr*) &addr_client, &addrlen_client);
+        if (n == -1) { fputs("Error: Could not get VC request from AS.\n", stderr); return; }
+        else request[n] = '\0';
+
+        bzero(fname, 26);
+
+        sscanf(request, "%5s %7s %5s %3s %25s\n", action, v_uid, vc, fop, fname);
+        if (strcmp(action, "VLC") != 0 || strlen(v_uid) != 5 || !is_only(NUMERIC, v_uid) ||
+            strlen(vc) != 4 || !is_only(NUMERIC, vc) || strlen(fop) != 1 || !strchr("RUDLX", fop[0]) ||
+            strlen(fname) > 24) sprintf(response, "ERR\n");
+        else if (((strcmp(fop, "L") == 0) || (strcmp(fop, "X") == 0)) && strlen(fname) != 0)
+            sprintf(response, "ERR\n");
+        else if (strcmp(v_uid, uid) != 0) sprintf(response, "RVC %s NOK\n", v_uid);
+        else  {
+            sprintf(response, "RVC %s OK\n", uid);
+
+            if (strcmp(fop, "L") == 0) strcpy(operation, "list");
+            else if (strcmp(fop, "R") == 0) strcpy(operation, "retrieve");
+            else if (strcmp(fop, "U") == 0) strcpy(operation, "upload");
+            else if (strcmp(fop, "D") == 0) strcpy(operation, "delete");
+            else if (strcmp(fop, "X") == 0) strcpy(operation, "remove");
+
+            if ((strcmp(fop, "L") == 0) || (strcmp(fop, "X") == 0))
+                fprintf(stdout, "\nVC: %s | %s\n", vc, operation);
+            else if ((strcmp(fop, "R") == 0) || (strcmp(fop, "U") == 0) || (strcmp(fop, "D") == 0))
+                fprintf(stdout, "\nVC: %s | %s: %s\n", vc, operation, fname);
+        }
+
+        n = sendto(fd_server, response, strlen(response), 0, (struct sockaddr*) &addr_client, addrlen_client);
+        if (n == -1) { fputs("Error: Could not send response to AS.\n", stderr); return; }
+
+    }
 }
 
 
@@ -204,6 +273,9 @@ void read_commands() {
 
     while (1) {
         fputs("> ", stdout);
+
+        bzero(command, 64);
+        bzero(action, 6);
 
         fgets(command, sizeof command, stdin);
         sscanf(command, "%5s %7s %9s\n", action, uid, pass);
@@ -217,6 +289,7 @@ void read_commands() {
         } else if (strcmp(action, "exit") == 0) {
             if (registered_user) unregister_user();
             return;
+
         } else fputs("Invalid action!\n", stdout);
     }
 }
@@ -226,12 +299,10 @@ int main(int argc, char const *argv[]) {
     parse_args(argc, argv);
 
     connect_to_as();
-    setup_pdserver();
 
     read_commands();
 
     disconnect_from_as();
-    disconnect_pdserver();
 
     return 0;
 }
