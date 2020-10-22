@@ -13,6 +13,7 @@
 
 #include "user.h"
 
+// CHANGE GETADDRINFO BEFORE SUBMITING
 
 int fd_as, fd_fs, errcode;
 ssize_t n;
@@ -26,7 +27,7 @@ char asip[18], asport[8];
 char fsip[18], fsport[8];
 
 char uid[6], pass[9];
-int rid = 9999;
+int tid = 9999, rid = 9999;
 
 int is_logged_in = 0;
 
@@ -91,7 +92,7 @@ int is_only(int which, char *str) {
     } else if (which == OP) {
         return strlen(str) == 1 && strchr("RUDLX", str[0]);
 
-    } else if (which == FILE) {
+    } else if (which == FILENAME) {
         int result;
 
         if (strlen(str) > 24) return 0;
@@ -182,7 +183,7 @@ void connect_to_fs() {
     hints_fs.ai_family = AF_INET;
     hints_fs.ai_socktype = SOCK_STREAM;
 
-    errcode = getaddrinfo(fsip, fsport, &hints_fs, &res_fs);
+    errcode = getaddrinfo("tejo.tecnico.ulisboa.pt", "59000", &hints_fs, &res_fs);
     if (errcode != 0) { fputs("Error: Could not connect to FS. Exiting...\n", stderr); exit(1); }
     if (connect(fd_fs, res_fs->ai_addr, res_fs->ai_addrlen) < 0 ) {
         fputs("Error: Could not connect to FS. Exiting...\n", stderr); exit(1);
@@ -270,7 +271,6 @@ void request_operation(char *fop, char *fname) {
 void val_operation(char *vc) {
     char request[128], response[128];
     char pcode[6];
-    int tid;
     int len;
 
     bzero(request, 128);
@@ -298,6 +298,69 @@ void val_operation(char *vc) {
 }
 
 
+void list_files() {
+    char request[128], response[128];
+    char pcode[6], fname[26];
+    int nfiles, fsize;
+    FILE *temp;
+    int i = 0, len, offset = 0, first = 1;
+
+    bzero(request, 128);
+    sprintf(request, "LST %s %d\n", uid, tid);
+
+    connect_to_fs();
+
+    len = strlen(request);
+
+    if (write(fd_fs, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
+
+    temp = fopen("temp.txt", "w+");
+    if (temp == NULL) { fputs("Error: Could not create process request. Try again!\n", stderr); return; }
+
+    bzero(buffer, 128);
+    while ((n = read(fd_fs, buffer, 127) > 0)) {
+        strncpy(response, buffer, 127);
+
+        if(strcmp(response, "ERR\n") == 0) {
+            message_error(UNK); fclose(temp); remove("temp.txt"); return; }
+        if (strcmp(response, "RLS EOF\n") == 0) {
+            fprintf(stdout, "User %s has no files in his directory.\n", uid);
+            fclose(temp); remove("temp.txt"); return; }
+        if (strcmp(response, "RLS NOK\n") == 0) {
+            fprintf(stdout, "Error: User %s does not exist in FS.\n", uid);
+            fclose(temp); remove("temp.txt"); return; }
+        if (strcmp(response, "RLS INV\n") == 0) {
+            fputs("Error: Could not validate operation.\n", stdout);
+            fclose(temp); remove("temp.txt"); return; }
+        if (strcmp(response, "RLS ERR\n") == 0) {
+            fputs("Error: Bad request. Try again!\n", stdout);
+            fclose(temp); remove("temp.txt"); return; }
+
+        if (first) {
+            sscanf(response, "%s %d %n", pcode, &nfiles, &offset);
+            fputs(response + offset, temp);
+
+            first = 0;
+        } else fputs(response, temp);
+
+        if (response[strlen(response) - 1] == '\n') break;
+    }
+
+    fprintf(stdout, "User %s has %d file(s) in his directory:\n\n", uid, nfiles);
+
+    fseek(temp, 0, SEEK_SET);
+    for (i = 1; i <= nfiles; i++) {
+        fscanf(temp, "%s %d", fname, &fsize);
+        fprintf(stdout, "%d. %s | %d bytes\n", i, fname, fsize);
+    } fputs("\n", stdout);
+
+    fclose(temp);
+    remove("temp.txt");
+
+    disconnect_from_fs();
+}
+
+
 void read_commands() {
     char command[128];
     char action[10];
@@ -321,7 +384,7 @@ void read_commands() {
         } else if ((strcmp(action, "req") == 0)) {
             if (!is_logged_in) { fputs("Error: No user is logged in. Try again!\n", stderr); continue; }
             if (!is_only(OP, arg_1)) { syntax_error(OP_INVALID); continue; }
-            if (strlen(arg_2) != 0 && !is_only(FILE, arg_2)) { syntax_error(FILE_INVALID); continue; }
+            if (strlen(arg_2) != 0 && !is_only(FILENAME, arg_2)) { syntax_error(FILE_INVALID); continue; }
 
             request_operation(arg_1, arg_2);
 
@@ -331,8 +394,7 @@ void read_commands() {
 
             val_operation(arg_1);
 
-        } /*
-         else if((strcmp(action, "retrieve") == 0) || (strcmp(action, "r") == 0)){
+        } /* else if((strcmp(action, "retrieve") == 0) || (strcmp(action, "r") == 0)) {
             //Connect to FS for action
             sscanf(command, "%s %s\n", action, filename);
             sprintf(buffer, "RET %s %s %s\n", uid, verCode, filename);
@@ -366,21 +428,10 @@ void read_commands() {
               printf("%s", recvline);
             }
             disconnect_from_fs();
-         }
-         else if((strcmp(action, "list") == 0) || (strcmp(action, "l") == 0)){
-            //Connect to FS for action
-            sscanf(command, "%s %s\n", action, filename);
-            sprintf(buffer, "LST %s %s\n", uid, verCode);
-            int sendbytes= strlen(buffer);
-            connect_to_fs();
-            if(write(fd_as, buffer, sendbytes) != sendbytes )
-              perror("Couldn't write to socket!");
-            while( (n= read(fd_fs, recvline, 127) > 0)){
-              printf("%s", recvline);
-            }
-            disconnect_from_fs();
-         }
-         else if((strcmp(action, "remove") == 0) || (strcmp(action, "x") == 0)){
+        } */else if((strcmp(action, "list") == 0) || (strcmp(action, "l") == 0)) {
+            list_files();
+
+        } /*else if((strcmp(action, "remove") == 0) || (strcmp(action, "x") == 0)){
             //Connect to FS for action
             sscanf(command, "%s %s\n", action, filename);
             sprintf(buffer, "REM %s %s\n", uid, verCode);

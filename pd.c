@@ -13,6 +13,7 @@
 
 #include "pd.h"
 
+// CHANGE GETADDRINFO BEFORE SUBMITING
 
 int fd_client, fd_server, errcode;
 ssize_t n;
@@ -194,6 +195,7 @@ void register_user() {
     if (pid) return;
     else {
         signal(SIGTERM, kill_pdserver);
+        setvbuf(stdout, NULL, _IONBF, 0);
 
         n = prctl(PR_SET_PDEATHSIG, SIGTERM);
         if (n == -1) { fputs("Error: Could not fork(). Exiting...\n", stderr); exit(1); }
@@ -255,9 +257,9 @@ void get_vc() {
             else if (strcmp(fop, "X") == 0) strcpy(operation, "remove");
 
             if ((strcmp(fop, "L") == 0) || (strcmp(fop, "X") == 0))
-                fprintf(stdout, "\nVC: %s | %s\n", vc, operation);
+                fprintf(stdout, "...\nVC: %s | %s\n> ", vc, operation);
             else if ((strcmp(fop, "R") == 0) || (strcmp(fop, "U") == 0) || (strcmp(fop, "D") == 0))
-                fprintf(stdout, "\nVC: %s | %s: %s\n", vc, operation, fname);
+                fprintf(stdout, "...\nVC: %s | %s: %s\n> ", vc, operation, fname);
         }
 
         n = sendto(fd_server, response, strlen(response), 0, (struct sockaddr*) &addr_client, addrlen_client);

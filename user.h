@@ -20,7 +20,7 @@
 #define ALPHA 2
 #define IP 3
 #define OP 4
-#define FILE 5
+#define FILENAME 5
 #define FILE_CHARS 6
 
 
@@ -36,6 +36,7 @@ void generate_rid();
 void login(char *l_uid, char *l_pass);
 void request_operation(char *fop, char *fname);
 void val_operation(char *vc);
+void list_files();
 void read_commands();
 
 
