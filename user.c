@@ -21,7 +21,7 @@ socklen_t addrlen;
 struct addrinfo hints_as, *res_as, hints_fs, *res_fs;
 struct sockaddr_in addr_as, addr_fs, sa;
 char recvline[128];
-char buffer[128];
+char buffer[1024];
 
 char asip[18], asport[8];
 char fsip[18], fsport[8];
@@ -118,7 +118,7 @@ void parse_args(int argc, char const *argv[]) {
     strncpy(asip, "localhost", 16);
     strncpy(asport, "58046", 6);
     strncpy(fsip, "localhost", 16);
-    strncpy(fsport, "57046", 6);
+    strncpy(fsport, "59046", 6);
 
     while ((opt = getopt(argc, (char * const*) argv, "n:p:m:q:")) != -1) {
         if (optarg[0] == '-') usage();
@@ -341,6 +341,7 @@ void list_files() {
             fputs(response + offset, temp);
 
             first = 0;
+
         } else fputs(response, temp);
 
         if (response[strlen(response) - 1] == '\n') break;
@@ -356,6 +357,78 @@ void list_files() {
 
     fclose(temp);
     remove("temp.txt");
+
+    disconnect_from_fs();
+}
+
+
+void retrieve_file(char *fname) {
+    char request[128], response[1024];
+    char pcode[6], status[6];
+    FILE *file;
+    int fsize;
+    int len, offset = 0, bytes_read = 0, first = 1;
+
+    bzero(request, 128);
+    sprintf(request, "RTV %s %d %s\n", uid, tid, fname);
+
+    connect_to_fs();
+
+    len = strlen(request);
+
+    if (write(fd_fs, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
+
+    file = fopen(fname, "w");
+    if (file == NULL) { fputs("Error: Could not create process request. Try again!\n", stderr); return; }
+
+    bzero(buffer, 1024);
+    n = read(fd_fs, buffer, 1023);
+
+    while (n  > 0) {
+        bzero(response, 1024);
+        memcpy(response, buffer, 1023);
+
+        if(strcmp(response, "ERR\n") == 0) {
+            message_error(UNK); fclose(file); remove(fname); return; }
+        if (strcmp(response, "RRT EOF\n") == 0) {
+            fprintf(stdout, "Error: %s is not avaiable in user directory.\n", fname);
+            fclose(file); remove(fname); return; }
+        if (strcmp(response, "RRT NOK\n") == 0) {
+            fprintf(stdout, "Error: User %s has no content in FS.\n", uid);
+            fclose(file); remove(fname); return; }
+        if (strcmp(response, "RRT INV\n") == 0) {
+            fputs("Error: Could not validate operation.\n", stdout);
+            fclose(file); remove(fname); return; }
+        if (strcmp(response, "RRT ERR\n") == 0) {
+            fputs("Error: Bad request. Try again!\n", stdout);
+            fclose(file); remove(fname); return; }
+
+        if (first) {
+            sscanf(response, "%s %s %d %n", pcode, status, &fsize, &offset);
+
+            if (strcmp(pcode, "RRT") != 0 || strcmp(status, "OK") != 0) {
+                message_error(UNK); fclose(file); remove(fname); return; }
+
+            fwrite(response + offset, 1, n - offset, file);
+            bytes_read -= offset;
+
+            first = 0;
+
+        } else fwrite(response, 1, n, file);
+
+        bytes_read += n;
+        if (bytes_read >= fsize && response[strlen(response) - 1] == '\n') break;
+
+        bzero(buffer, 1024);
+        n = read(fd_fs, buffer, 1023);
+    }
+
+    fprintf(stdout, "Retrieved %s\n", fname);
+
+    fseek(file, 0, SEEK_SET);
+    ftruncate(fileno(file), fsize);
+
+    fclose(file);
 
     disconnect_from_fs();
 }
@@ -394,18 +467,12 @@ void read_commands() {
 
             val_operation(arg_1);
 
-        } /* else if((strcmp(action, "retrieve") == 0) || (strcmp(action, "r") == 0)) {
-            //Connect to FS for action
-            sscanf(command, "%s %s\n", action, filename);
-            sprintf(buffer, "RET %s %s %s\n", uid, verCode, filename);
-            //int sendbytes= strlen(buffer);
-            connect_to_fs();
-            while( (n= read(fd_fs, recvline, 127) > 0)){
-              printf("%s", recvline);
-            }
-            disconnect_from_fs();
-         }
-         else if((strcmp(action, "upload") == 0) || (strcmp(action, "u") == 0)){
+        } else if((strcmp(action, "retrieve") == 0) || (strcmp(action, "r") == 0)) {
+            if (!is_only(FILENAME, arg_1)) { syntax_error(FILE_INVALID); continue; }
+
+            retrieve_file(arg_1);
+
+        } /* else if((strcmp(action, "upload") == 0) || (strcmp(action, "u") == 0)){
             //Connect to FS for action
             sscanf(command, "%s %s\n", action, filename);
             sprintf(buffer, "UPL %s %s %s\n", uid, verCode, filename);

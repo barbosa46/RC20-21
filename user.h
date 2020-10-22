@@ -37,6 +37,7 @@ void login(char *l_uid, char *l_pass);
 void request_operation(char *fop, char *fname);
 void val_operation(char *vc);
 void list_files();
+void retrieve_file(char *fname);
 void read_commands();
 
 
