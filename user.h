@@ -38,6 +38,8 @@ void request_operation(char *fop, char *fname);
 void val_operation(char *vc);
 void list_files();
 void retrieve_file(char *fname);
+void upload_file(char *fname);
+void remove_user();
 void read_commands();
 
 

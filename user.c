@@ -312,29 +312,33 @@ void list_files() {
 
     len = strlen(request);
 
-    if (write(fd_fs, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
+    if (write(fd_fs, request, len) != len) {
+        fputs("Error: Could not send request. Try again!\n", stderr);
+        disconnect_from_fs(); return; }
 
     temp = fopen("temp.txt", "w+");
-    if (temp == NULL) { fputs("Error: Could not create process request. Try again!\n", stderr); return; }
+    if (temp == NULL) {
+        fputs("Error: Could not process request. Try again!\n", stderr);
+        disconnect_from_fs(); return; }
 
     bzero(buffer, 128);
     while ((n = read(fd_fs, buffer, 127) > 0)) {
         strncpy(response, buffer, 127);
 
         if(strcmp(response, "ERR\n") == 0) {
-            message_error(UNK); fclose(temp); remove("temp.txt"); return; }
+            message_error(UNK); fclose(temp); remove("temp.txt"); disconnect_from_fs(); return; }
         if (strcmp(response, "RLS EOF\n") == 0) {
             fprintf(stdout, "User %s has no files in his directory.\n", uid);
-            fclose(temp); remove("temp.txt"); return; }
+            fclose(temp); remove("temp.txt"); disconnect_from_fs(); return; }
         if (strcmp(response, "RLS NOK\n") == 0) {
             fprintf(stdout, "Error: User %s does not exist in FS.\n", uid);
-            fclose(temp); remove("temp.txt"); return; }
+            fclose(temp); remove("temp.txt"); disconnect_from_fs(); return; }
         if (strcmp(response, "RLS INV\n") == 0) {
             fputs("Error: Could not validate operation.\n", stdout);
-            fclose(temp); remove("temp.txt"); return; }
+            fclose(temp); remove("temp.txt"); disconnect_from_fs(); return; }
         if (strcmp(response, "RLS ERR\n") == 0) {
             fputs("Error: Bad request. Try again!\n", stdout);
-            fclose(temp); remove("temp.txt"); return; }
+            fclose(temp); remove("temp.txt"); disconnect_from_fs(); return; }
 
         if (first) {
             sscanf(response, "%s %d %n", pcode, &nfiles, &offset);
@@ -376,10 +380,14 @@ void retrieve_file(char *fname) {
 
     len = strlen(request);
 
-    if (write(fd_fs, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
+    if (write(fd_fs, request, len) != len) {
+        fputs("Error: Could not send request. Try again!\n", stderr);
+        disconnect_from_fs(); return; }
 
     file = fopen(fname, "w");
-    if (file == NULL) { fputs("Error: Could not create process request. Try again!\n", stderr); return; }
+    if (file == NULL) {
+        fputs("Error: Could not process request. Try again!\n", stderr);
+        disconnect_from_fs(); return; }
 
     bzero(buffer, 1024);
     n = read(fd_fs, buffer, 1023);
@@ -389,19 +397,19 @@ void retrieve_file(char *fname) {
         memcpy(response, buffer, 1023);
 
         if(strcmp(response, "ERR\n") == 0) {
-            message_error(UNK); fclose(file); remove(fname); return; }
+            message_error(UNK); fclose(file); remove(fname); disconnect_from_fs(); return; }
         if (strcmp(response, "RRT EOF\n") == 0) {
             fprintf(stdout, "Error: %s is not avaiable in user directory.\n", fname);
-            fclose(file); remove(fname); return; }
+            fclose(file); remove(fname); disconnect_from_fs(); return; }
         if (strcmp(response, "RRT NOK\n") == 0) {
             fprintf(stdout, "Error: User %s has no content in FS.\n", uid);
-            fclose(file); remove(fname); return; }
+            fclose(file); remove(fname); disconnect_from_fs(); return; }
         if (strcmp(response, "RRT INV\n") == 0) {
             fputs("Error: Could not validate operation.\n", stdout);
-            fclose(file); remove(fname); return; }
+            fclose(file); remove(fname); disconnect_from_fs(); return; }
         if (strcmp(response, "RRT ERR\n") == 0) {
             fputs("Error: Bad request. Try again!\n", stdout);
-            fclose(file); remove(fname); return; }
+            fclose(file); remove(fname); disconnect_from_fs(); return; }
 
         if (first) {
             sscanf(response, "%s %s %d %n", pcode, status, &fsize, &offset);
@@ -429,6 +437,100 @@ void retrieve_file(char *fname) {
     ftruncate(fileno(file), fsize);
 
     fclose(file);
+
+    disconnect_from_fs();
+}
+
+
+void upload_file(char *fname) {
+    char request[1024], response[128];
+    FILE *file;
+    int fsize;
+    int len;
+
+    file = fopen(fname, "r");
+    if (file == NULL) {
+        fputs("Error: File not found. Try again!\n", stderr); return; }
+
+    fseek(file, 0, SEEK_END);
+    fsize = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    bzero(request, 1024);
+    sprintf(request, "UPL %s %d %s %d ", uid, tid, fname, fsize);
+
+    connect_to_fs();
+
+    len = strlen(request);
+    write(fd_fs, request, len);
+
+    while(!feof(file)) {
+        bzero(request, 1024);
+        n = fread(request, 1, 1023, file);
+
+        if (write(fd_fs, request, n) != n) {
+            fputs("Error: Could not send request. Try again!\n", stderr);
+            fclose(file); disconnect_from_fs(); return; }
+
+    } write(fd_fs, "\n", 1);
+
+    fclose(file);
+
+    bzero(response, 128);
+    bzero(buffer, 128);
+    while ((n = read(fd_fs, buffer, 127) > 0)) {
+        strncat(response, buffer, 127);
+        if (response[strlen(response) - 1] == '\n') break;
+    }
+
+    if(strcmp(response, "ERR\n") == 0) message_error(UNK);
+    if (strcmp(response, "RUP OK\n") == 0)
+        fprintf(stdout, "Uploaded %s (%d bytes)\n", fname, fsize);
+    if (strcmp(response, "RUP NOK\n") == 0)
+        fprintf(stdout, "Error: User %s does not exist in FS.\n", uid);
+    if (strcmp(response, "RUP DUP\n") == 0)
+        fprintf(stdout, "Error: %s already exists in FS.\n", fname);
+    if (strcmp(response, "RUP FULL\n") == 0)
+        fprintf(stdout, "Error: User %s has exceeded file limit in FS.\n", uid);
+    if (strcmp(response, "RUP INV\n") == 0)
+        fputs("Error: Could not validate operation.\n", stdout);
+    if (strcmp(response, "RUP ERR\n") == 0)
+        fputs("Error: Bad request. Try again!\n", stdout);
+
+    disconnect_from_fs();
+
+}
+
+
+void remove_user() {
+    char request[128], response[128];
+    int len;
+
+    bzero(request, 128);
+    sprintf(request, "REM %s %d\n", uid, tid);
+
+    connect_to_fs();
+
+    len = strlen(request);
+
+    if (write(fd_fs, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
+
+    bzero(response, 128);
+    bzero(buffer, 128);
+    while ((n = read(fd_fs, buffer, 127) > 0)) {
+        strncat(response, buffer, 127);
+        if (response[strlen(response) - 1] == '\n') break;
+    }
+
+    if(strcmp(response, "ERR\n") == 0) message_error(UNK);
+    if (strcmp(response, "RRM OK\n") == 0)
+        fprintf(stdout, "User %s was successfully removed from FS\n", uid);
+    if (strcmp(response, "RRM NOK\n") == 0)
+        fprintf(stdout, "Error: User %s does not exist in FS.\n", uid);
+    if (strcmp(response, "RRM INV\n") == 0)
+        fputs("Error: Could not validate operation.\n", stdout);
+    if (strcmp(response, "RRM ERR\n") == 0)
+        fputs("Error: Bad request. Try again!\n", stdout);
 
     disconnect_from_fs();
 }
@@ -472,18 +574,12 @@ void read_commands() {
 
             retrieve_file(arg_1);
 
-        } /* else if((strcmp(action, "upload") == 0) || (strcmp(action, "u") == 0)){
-            //Connect to FS for action
-            sscanf(command, "%s %s\n", action, filename);
-            sprintf(buffer, "UPL %s %s %s\n", uid, verCode, filename);
-            //int sendbytes= strlen(buffer);
-            connect_to_fs();
-            while( (n= read(fd_fs, recvline, 127) > 0)){
-              printf("%s", recvline);
-            }
-            disconnect_from_fs();
-         }
-         else if((strcmp(action, "delete") == 0) || (strcmp(action, "d") == 0)){
+        } else if((strcmp(action, "upload") == 0) || (strcmp(action, "u") == 0)){
+            if (!is_only(FILENAME, arg_1)) { syntax_error(FILE_INVALID); continue; }
+
+            upload_file(arg_1);
+
+        } /* else if((strcmp(action, "delete") == 0) || (strcmp(action, "d") == 0)){
             //Connect to FS for action
             sscanf(command, "%s %s\n", action, filename);
             sprintf(buffer, "DEL %s %s %s\n", uid, verCode, filename);
@@ -498,21 +594,10 @@ void read_commands() {
         } */else if((strcmp(action, "list") == 0) || (strcmp(action, "l") == 0)) {
             list_files();
 
-        } /*else if((strcmp(action, "remove") == 0) || (strcmp(action, "x") == 0)){
-            //Connect to FS for action
-            sscanf(command, "%s %s\n", action, filename);
-            sprintf(buffer, "REM %s %s\n", uid, verCode);
-            int sendbytes= strlen(buffer);
-            connect_to_fs();
-            if(write(fd_fs, buffer, sendbytes) != sendbytes )
-              perror("Couldn't write to socket!");
-            while( (n= read(fd_fs, recvline, 127) > 0)){
-              printf("%s", recvline);
-            }
-            disconnect_from_fs();
+        } else if((strcmp(action, "remove") == 0) || (strcmp(action, "x") == 0)) {
+            remove_user();
 
-
-        }*/ else if (strcmp(action, "exit") == 0) return;
+        } else if (strcmp(action, "exit") == 0) return;
         else fputs("Invalid action!\n", stdout);
     }
 }
