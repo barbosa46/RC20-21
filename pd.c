@@ -13,7 +13,6 @@
 
 #include "pd.h"
 
-// CHANGE GETADDRINFO BEFORE SUBMITING
 
 int fd_client, fd_server, errcode;
 ssize_t n;
@@ -133,7 +132,7 @@ void connect_to_as() {
     hints_client.ai_family = AF_INET;
     hints_client.ai_socktype = SOCK_DGRAM;
 
-    errcode = getaddrinfo("tejo.tecnico.ulisboa.pt", "58011", &hints_client, &res_client);
+    errcode = getaddrinfo(asip, asport, &hints_client, &res_client);
     if (errcode != 0) { fputs("Error: Could not connect to AS. Exiting...\n", stderr); exit(1); }
 }
 

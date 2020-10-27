@@ -13,7 +13,6 @@
 
 #include "user.h"
 
-// CHANGE GETADDRINFO BEFORE SUBMITING
 
 int fd_as, fd_fs, errcode;
 ssize_t n;
@@ -167,7 +166,7 @@ void connect_to_as() {
     hints_as.ai_family = AF_INET;
     hints_as.ai_socktype = SOCK_STREAM;
 
-    errcode = getaddrinfo("tejo.tecnico.ulisboa.pt", "58011", &hints_as, &res_as);
+    errcode = getaddrinfo(asip, asport, &hints_as, &res_as);
     if (errcode != 0) { fputs("Error: Could not connect to AS. Exiting...\n", stderr); exit(1); }
     if (connect(fd_as, res_as->ai_addr, res_as->ai_addrlen) < 0) {
         fputs("Error: Could not connect to AS. Exiting...\n", stderr); exit(1);
@@ -183,7 +182,7 @@ void connect_to_fs() {
     hints_fs.ai_family = AF_INET;
     hints_fs.ai_socktype = SOCK_STREAM;
 
-    errcode = getaddrinfo("tejo.tecnico.ulisboa.pt", "59000", &hints_fs, &res_fs);
+    errcode = getaddrinfo(fsip, fsport, &hints_fs, &res_fs);
     if (errcode != 0) { fputs("Error: Could not connect to FS. Exiting...\n", stderr); exit(1); }
     if (connect(fd_fs, res_fs->ai_addr, res_fs->ai_addrlen) < 0 ) {
         fputs("Error: Could not connect to FS. Exiting...\n", stderr); exit(1);
@@ -502,6 +501,49 @@ void upload_file(char *fname) {
 }
 
 
+void delete_file(char *fname) {
+    char request[128], response[128];
+    int len;
+
+    bzero(request, 128);
+    sprintf(request, "DEL %s %d %s\n", uid, tid, fname);
+
+    connect_to_fs();
+
+    len = strlen(request);
+
+    if (write(fd_fs, request, len) != len) {
+        fputs("Error: Could not send request. Try again!\n", stderr);
+        disconnect_from_fs(); return; }
+
+    bzero(response, 128);
+    bzero(buffer, 128);
+    while ((n = read(fd_fs, buffer, 127) > 0)) {
+        strncat(response, buffer, 127);
+        if (response[strlen(response) - 1] == '\n') break;
+    }
+
+    if(strcmp(response, "ERR\n") == 0) {
+        message_error(UNK); disconnect_from_fs(); return; }
+    if (strcmp(response, "RDL EOF\n") == 0) {
+        fprintf(stdout, "Error: %s is not avaiable in user directory.\n", fname);
+        disconnect_from_fs(); return; }
+    if (strcmp(response, "RDL NOK\n") == 0) {
+        fprintf(stdout, "Error: User %s does not exist in FS.\n", uid);
+        disconnect_from_fs(); return; }
+    if (strcmp(response, "RDL INV\n") == 0) {
+        fputs("Error: Could not validate operation.\n", stdout);
+        disconnect_from_fs(); return; }
+    if (strcmp(response, "RDL ERR\n") == 0) {
+        fputs("Error: Bad request. Try again!\n", stdout);
+        disconnect_from_fs(); return; }
+
+    if (strcmp(response, "RDL OK\n") == 0) fprintf(stdout, "%s successfully deleted from user directory\n", fname);
+
+    disconnect_from_fs();
+}
+
+
 void remove_user() {
     char request[128], response[128];
     int len;
@@ -579,19 +621,12 @@ void read_commands() {
 
             upload_file(arg_1);
 
-        } /* else if((strcmp(action, "delete") == 0) || (strcmp(action, "d") == 0)){
-            //Connect to FS for action
-            sscanf(command, "%s %s\n", action, filename);
-            sprintf(buffer, "DEL %s %s %s\n", uid, verCode, filename);
-            int sendbytes= strlen(buffer);
-            connect_to_fs();
-            if(write(fd_fs, buffer, sendbytes) != sendbytes )
-              perror("Couldn't write to socket!");
-            while( (n= read(fd_fs, recvline, 127) > 0)){
-              printf("%s", recvline);
-            }
-            disconnect_from_fs();
-        } */else if((strcmp(action, "list") == 0) || (strcmp(action, "l") == 0)) {
+        } else if((strcmp(action, "delete") == 0) || (strcmp(action, "d") == 0)) {
+            if (!is_only(FILENAME, arg_1)) { syntax_error(FILE_INVALID); continue; }
+
+            delete_file(arg_1);
+
+        } else if((strcmp(action, "list") == 0) || (strcmp(action, "l") == 0)) {
             list_files();
 
         } else if((strcmp(action, "remove") == 0) || (strcmp(action, "x") == 0)) {
