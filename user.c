@@ -291,7 +291,7 @@ void val_operation(char *vc) {
 
     sscanf(response, "%5s %d\n", pcode, &tid);
 
-    if (strcmp(pcode, "RAU") == 0) fprintf(stdout, "Authenticated! (TID = %d)\n", tid);
+    if (strcmp(pcode, "RAU") == 0) fprintf(stdout, "Authenticated! (TID = %04d)\n", tid);
     else message_error(UNK);
 
 }
@@ -305,7 +305,7 @@ void list_files() {
     int i = 0, len, offset = 0, first = 1;
 
     bzero(request, 128);
-    sprintf(request, "LST %s %d\n", uid, tid);
+    sprintf(request, "LST %s %04d\n", uid, tid);
 
     connect_to_fs();
 
@@ -373,7 +373,7 @@ void retrieve_file(char *fname) {
     int len, offset = 0, bytes_read = 0, first = 1;
 
     bzero(request, 128);
-    sprintf(request, "RTV %s %d %s\n", uid, tid, fname);
+    sprintf(request, "RTV %s %04d %s\n", uid, tid, fname);
 
     connect_to_fs();
 
@@ -456,7 +456,7 @@ void upload_file(char *fname) {
     fseek(file, 0, SEEK_SET);
 
     bzero(request, 1024);
-    sprintf(request, "UPL %s %d %s %d ", uid, tid, fname, fsize);
+    sprintf(request, "UPL %s %04d %s %d ", uid, tid, fname, fsize);
 
     connect_to_fs();
 
@@ -506,7 +506,7 @@ void delete_file(char *fname) {
     int len;
 
     bzero(request, 128);
-    sprintf(request, "DEL %s %d %s\n", uid, tid, fname);
+    sprintf(request, "DEL %s %04d %s\n", uid, tid, fname);
 
     connect_to_fs();
 
@@ -549,7 +549,7 @@ void remove_user() {
     int len;
 
     bzero(request, 128);
-    sprintf(request, "REM %s %d\n", uid, tid);
+    sprintf(request, "REM %s %04d\n", uid, tid);
 
     connect_to_fs();
 
