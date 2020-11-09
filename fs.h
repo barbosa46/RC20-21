@@ -10,7 +10,7 @@
 #define ALPHA 2
 #define IP 3
 #define OP 4
-#define FILE 5
+#define FILENAME 5
 #define FILE_CHARS 6
 
 #define BACKLOG 100
@@ -25,6 +25,7 @@ void connect_to_as();
 void setup_fsserver();
 void disconnect_from_as();
 void disconnect_fs();
+int validate(char *uid, char *tid);
 void list_files();
 void retrive_file();
 void upload_file();

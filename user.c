@@ -14,6 +14,7 @@
 #include "user.h"
 
 
+/* Socket vars */
 int fd_as, fd_fs, errcode;
 ssize_t n;
 socklen_t addrlen;
@@ -22,12 +23,15 @@ struct sockaddr_in addr_as, addr_fs, sa;
 char recvline[128];
 char buffer[1024];
 
+/* Comms info */
 char asip[18], asport[8];
 char fsip[18], fsport[8];
 
+/* User info */
 char uid[6], pass[9];
 int tid = 9999, rid = 9999;
 
+/* Login control */
 int is_logged_in = 0;
 
 
@@ -37,7 +41,7 @@ void usage() {
 }
 
 
-void syntax_error(int error) {
+void syntax_error(int error) {  // error gives error info
     if (error == IP_INVALID) fputs("Error: Invalid IP address. Exiting...\n", stderr);
     else if (error == PORT_INVALID) fputs("Error: Invalid port. Exiting...\n", stderr);
     else if (error == USER) {
@@ -54,7 +58,7 @@ void syntax_error(int error) {
 }
 
 
-void message_error(int error) {
+void message_error(int error) {  // error gives error info
     if (error == LOGIN) fputs("Error: Invalid user ID or password. Try again!\n", stderr);
     else if (error == LOGOUT) { fputs("Error: Logout unsuccessful. Exiting...\n", stderr); exit(1); }
     else if (error == REQ) fputs("Error: Could not send VC to PD. Try again!\n", stderr);
@@ -63,7 +67,7 @@ void message_error(int error) {
 }
 
 
-int is_only(int which, char *str) {
+int is_only(int which, char *str) {  // check if string is only numeric, alpha, ...
     if (which == NUMERIC) {
         while (*str) { if (isdigit(*str++) == 0) return 0; }
         return 1;
@@ -109,11 +113,12 @@ int is_only(int which, char *str) {
 }
 
 
-void parse_args(int argc, char const *argv[]) {
+void parse_args(int argc, char const *argv[]) { // parse flags and flag args
     int opt;
 
-    if (argc > 9) usage();
+    if (argc > 9) usage();  // numargs in range
 
+    /* default values */
     strncpy(asip, "localhost", 16);
     strncpy(asport, "58046", 6);
     strncpy(fsip, "localhost", 16);
@@ -123,6 +128,8 @@ void parse_args(int argc, char const *argv[]) {
         if (optarg[0] == '-') usage();
 
         switch (opt) {
+            /* check flag; parse args
+               ifs check if args are valid */
             case 'n':
                 strncpy(asip, optarg, 16);
                 if (!is_only(IP, asip)) syntax_error(IP_INVALID);
@@ -158,7 +165,7 @@ void parse_args(int argc, char const *argv[]) {
 }
 
 
-void connect_to_as() {
+void connect_to_as() {  // standard tcp connection setup to as
     fd_as = socket(AF_INET, SOCK_STREAM, 0);
     if (fd_as == -1) { fputs("Error: Could not create socket. Exiting...\n", stderr); exit(1); }
 
@@ -174,7 +181,7 @@ void connect_to_as() {
 }
 
 
-void connect_to_fs() {
+void connect_to_fs() {  // standard tcp connection setup to fs
     fd_fs = socket(AF_INET, SOCK_STREAM, 0);
     if (fd_fs == -1) { fputs("Error: Could not create socket. Exiting...\n", stderr); exit(1); }
 
@@ -184,31 +191,32 @@ void connect_to_fs() {
 
     errcode = getaddrinfo(fsip, fsport, &hints_fs, &res_fs);
     if (errcode != 0) { fputs("Error: Could not connect to FS. Exiting...\n", stderr); exit(1); }
-    if (connect(fd_fs, res_fs->ai_addr, res_fs->ai_addrlen) < 0 ) {
+    if (connect(fd_fs, res_fs->ai_addr, res_fs->ai_addrlen) < 0) {
         fputs("Error: Could not connect to FS. Exiting...\n", stderr); exit(1);
     }
 }
 
 
-void disconnect_from_as() {
+void disconnect_from_as() {  // standard tcp disconnect from as
     freeaddrinfo(res_as);
     close(fd_as);
 }
 
 
-void disconnect_from_fs() {
+void disconnect_from_fs() {  // standard tcp disconnect from fs
     freeaddrinfo(res_fs);
     close(fd_fs);
 }
 
 
-void generate_rid() { rid = rand() % 9000 + 1000; }
+void generate_rid() { rid = rand() % 9000 + 1000; }  // generate a random rid between 1000 and 9999
 
 
-void login(char *l_uid, char *l_pass) {
+void login(char *l_uid, char *l_pass) {  // login (as command)
     char request[20], response[128];
     int len;
 
+    /* stop uid and pass from overflowing */
     strncpy(uid, l_uid, 5);
     strncpy(pass, l_pass, 8);
 
@@ -218,6 +226,7 @@ void login(char *l_uid, char *l_pass) {
 
     if (write(fd_as, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
 
+    /* clear receive buffers, read response */
     bzero(response, 128);
     bzero(buffer, 128);
     while ((n = read(fd_as, buffer, 127) > 0)) {
@@ -225,20 +234,22 @@ void login(char *l_uid, char *l_pass) {
         if (response[strlen(response) - 1] == '\n') break;
     }
 
+    /* reply parsing */
     if (strcmp(response, "RLO OK\n") == 0) fputs("You are now logged in!\n", stdout);
     if (strcmp(response, "RLO NOK\n") == 0) { message_error(LOGIN); return; }
     if (strcmp(response, "ERR\n") == 0) { message_error(UNK); return; }
 
-    is_logged_in = 1;
+    is_logged_in = 1;   // set login control flag
 }
 
 
-void request_operation(char *fop, char *fname) {
+void request_operation(char *fop, char *fname) {  // request operation (as command)
     char request[128], response[128];
     int len;
 
-    generate_rid();
+    generate_rid();  // generate request id
 
+    /* request format depends on operation type */
     bzero(request, 128);
     if ((strcmp(fop, "R") == 0) || (strcmp(fop, "U") == 0) || (strcmp(fop, "D") == 0))
         sprintf(request, "REQ %s %d %s %s\n", uid, rid, fop, fname);
@@ -250,6 +261,7 @@ void request_operation(char *fop, char *fname) {
 
     if (write(fd_as, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
 
+    /* clear receive buffers, read response */
     bzero(response, 128);
     bzero(buffer, 128);
     while ((n = read(fd_as, buffer, 127) > 0)) {
@@ -257,6 +269,7 @@ void request_operation(char *fop, char *fname) {
         if (response[strlen(response) - 1] == '\n') break;
     }
 
+    /* reply parsing */
     if (strcmp(response, "RRQ ELOG\n") == 0) { fputs("Error: No user is logged in. Try again!\n", stderr); return; }
     if (strcmp(response, "RRQ EPD\n") == 0) { message_error(REQ); return; }
     if (strcmp(response, "RRQ EUSER\n") == 0) { message_error(LOGIN); return; }
@@ -267,7 +280,7 @@ void request_operation(char *fop, char *fname) {
 }
 
 
-void val_operation(char *vc) {
+void val_operation(char *vc) {  // validate operation (as command)
     char request[128], response[128];
     char pcode[6];
     int len;
@@ -279,6 +292,7 @@ void val_operation(char *vc) {
 
     if (write(fd_as, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
 
+    /* clear receive buffers, read response */
     bzero(response, 128);
     bzero(buffer, 128);
     while ((n = read(fd_as, buffer, 127) > 0)) {
@@ -286,6 +300,7 @@ void val_operation(char *vc) {
         if (response[strlen(response) - 1] == '\n') break;
     }
 
+    /* reply parsing */
     if (strcmp(response, "RAU 0\n") == 0) { fputs("Error: Authentication failed. Try again!\n", stderr); return; }
     if (strcmp(response, "ERR\n") == 0) { message_error(UNK); return; }
 
@@ -297,7 +312,7 @@ void val_operation(char *vc) {
 }
 
 
-void list_files() {
+void list_files() {  // list files (fs operation)
     char request[128], response[128];
     char pcode[6], fname[26];
     int nfiles, fsize;
@@ -315,15 +330,18 @@ void list_files() {
         fputs("Error: Could not send request. Try again!\n", stderr);
         disconnect_from_fs(); return; }
 
+    /* create a temp file for storing filenames and file sizes */
     temp = fopen("temp.txt", "w+");
     if (temp == NULL) {
         fputs("Error: Could not process request. Try again!\n", stderr);
         disconnect_from_fs(); return; }
 
+    /* clear receive buffers, read response */
     bzero(buffer, 128);
     while ((n = read(fd_fs, buffer, 127) > 0)) {
         strncpy(response, buffer, 127);
 
+        /* reply parsing */
         if(strcmp(response, "ERR\n") == 0) {
             message_error(UNK); fclose(temp); remove("temp.txt"); disconnect_from_fs(); return; }
         if (strcmp(response, "RLS EOF\n") == 0) {
@@ -339,25 +357,27 @@ void list_files() {
             fputs("Error: Bad request. Try again!\n", stdout);
             fclose(temp); remove("temp.txt"); disconnect_from_fs(); return; }
 
-        if (first) {
+        if (first) {  // if first loop
             sscanf(response, "%s %d %n", pcode, &nfiles, &offset);
             fputs(response + offset, temp);
 
             first = 0;
 
-        } else fputs(response, temp);
+        } else fputs(response, temp);  // if not first loop
 
         if (response[strlen(response) - 1] == '\n') break;
     }
 
     fprintf(stdout, "User %s has %d file(s) in his directory:\n\n", uid, nfiles);
 
+    /* read from temp file */
     fseek(temp, 0, SEEK_SET);
     for (i = 1; i <= nfiles; i++) {
         fscanf(temp, "%s %d", fname, &fsize);
         fprintf(stdout, "%d. %s | %d bytes\n", i, fname, fsize);
     } fputs("\n", stdout);
 
+    /* close stream and delete temp file */
     fclose(temp);
     remove("temp.txt");
 
@@ -365,7 +385,7 @@ void list_files() {
 }
 
 
-void retrieve_file(char *fname) {
+void retrieve_file(char *fname) {  // retrieve file (fs operation)
     char request[128], response[1024];
     char pcode[6], status[6];
     FILE *file;
@@ -383,11 +403,13 @@ void retrieve_file(char *fname) {
         fputs("Error: Could not send request. Try again!\n", stderr);
         disconnect_from_fs(); return; }
 
+    /* create file */
     file = fopen(fname, "w");
     if (file == NULL) {
         fputs("Error: Could not process request. Try again!\n", stderr);
         disconnect_from_fs(); return; }
 
+    /* clear receive buffers, read response */
     bzero(buffer, 1024);
     n = read(fd_fs, buffer, 1023);
 
@@ -395,6 +417,7 @@ void retrieve_file(char *fname) {
         bzero(response, 1024);
         memcpy(response, buffer, 1023);
 
+        /* reply parsing */
         if(strcmp(response, "ERR\n") == 0) {
             message_error(UNK); fclose(file); remove(fname); disconnect_from_fs(); return; }
         if (strcmp(response, "RRT EOF\n") == 0) {
@@ -410,20 +433,22 @@ void retrieve_file(char *fname) {
             fputs("Error: Bad request. Try again!\n", stdout);
             fclose(file); remove(fname); disconnect_from_fs(); return; }
 
-        if (first) {
+        if (first) {  // if first loop
+            /* extract file info */
             sscanf(response, "%s %s %d %n", pcode, status, &fsize, &offset);
 
             if (strcmp(pcode, "RRT") != 0 || strcmp(status, "OK") != 0) {
                 message_error(UNK); fclose(file); remove(fname); return; }
 
+            /* start writing to file */
             fwrite(response + offset, 1, n - offset, file);
             bytes_read -= offset;
 
             first = 0;
 
-        } else fwrite(response, 1, n, file);
+        } else fwrite(response, 1, n, file); // if not first loop, write to file
 
-        bytes_read += n;
+        bytes_read += n;  // keep count of bytes read
         if (bytes_read >= fsize && response[strlen(response) - 1] == '\n') break;
 
         bzero(buffer, 1024);
@@ -433,7 +458,7 @@ void retrieve_file(char *fname) {
     fprintf(stdout, "Retrieved %s\n", fname);
 
     fseek(file, 0, SEEK_SET);
-    ftruncate(fileno(file), fsize);
+    ftruncate(fileno(file), fsize);  // delete last char (\n)
 
     fclose(file);
 
@@ -441,20 +466,23 @@ void retrieve_file(char *fname) {
 }
 
 
-void upload_file(char *fname) {
+void upload_file(char *fname) {  // upload file (fs operation)
     char request[1024], response[128];
     FILE *file;
     int fsize;
     int len;
 
+    /* open file to upload in read mode */
     file = fopen(fname, "r");
     if (file == NULL) {
         fputs("Error: File not found. Try again!\n", stderr); return; }
 
+    /* get file size */
     fseek(file, 0, SEEK_END);
     fsize = ftell(file);
     fseek(file, 0, SEEK_SET);
 
+    /* write file info to socket */
     bzero(request, 1024);
     sprintf(request, "UPL %s %04d %s %d ", uid, tid, fname, fsize);
 
@@ -463,6 +491,7 @@ void upload_file(char *fname) {
     len = strlen(request);
     write(fd_fs, request, len);
 
+    /* while not end of file, write to socket */
     while(!feof(file)) {
         bzero(request, 1024);
         n = fread(request, 1, 1023, file);
@@ -475,6 +504,7 @@ void upload_file(char *fname) {
 
     fclose(file);
 
+    /* clear receive buffers, read response */
     bzero(response, 128);
     bzero(buffer, 128);
     while ((n = read(fd_fs, buffer, 127) > 0)) {
@@ -482,6 +512,7 @@ void upload_file(char *fname) {
         if (response[strlen(response) - 1] == '\n') break;
     }
 
+    /* reply parsing */
     if(strcmp(response, "ERR\n") == 0) message_error(UNK);
     if (strcmp(response, "RUP OK\n") == 0)
         fprintf(stdout, "Uploaded %s (%d bytes)\n", fname, fsize);
@@ -501,7 +532,7 @@ void upload_file(char *fname) {
 }
 
 
-void delete_file(char *fname) {
+void delete_file(char *fname) {  // delete file (fs operation)
     char request[128], response[128];
     int len;
 
@@ -516,6 +547,7 @@ void delete_file(char *fname) {
         fputs("Error: Could not send request. Try again!\n", stderr);
         disconnect_from_fs(); return; }
 
+    /* clear receive buffers, read response */
     bzero(response, 128);
     bzero(buffer, 128);
     while ((n = read(fd_fs, buffer, 127) > 0)) {
@@ -523,6 +555,7 @@ void delete_file(char *fname) {
         if (response[strlen(response) - 1] == '\n') break;
     }
 
+    /* reply parsing */
     if(strcmp(response, "ERR\n") == 0) {
         message_error(UNK); disconnect_from_fs(); return; }
     if (strcmp(response, "RDL EOF\n") == 0) {
@@ -544,7 +577,7 @@ void delete_file(char *fname) {
 }
 
 
-void remove_user() {
+void remove_user() {  // remove user (fs operation)
     char request[128], response[128];
     int len;
 
@@ -557,6 +590,7 @@ void remove_user() {
 
     if (write(fd_fs, request, len) != len) { fputs("Error: Could not send request. Try again!\n", stderr); return; }
 
+    /* clear receive buffers, read response */
     bzero(response, 128);
     bzero(buffer, 128);
     while ((n = read(fd_fs, buffer, 127) > 0)) {
@@ -564,6 +598,7 @@ void remove_user() {
         if (response[strlen(response) - 1] == '\n') break;
     }
 
+    /* reply parsing */
     if(strcmp(response, "ERR\n") == 0) message_error(UNK);
     if (strcmp(response, "RRM OK\n") == 0)
         fprintf(stdout, "User %s was successfully removed from FS\n", uid);
@@ -578,7 +613,7 @@ void remove_user() {
 }
 
 
-void read_commands() {
+void read_commands() {  // read commands from stdin
     char command[128];
     char action[10];
     char arg_1[64], arg_2[64];
@@ -587,11 +622,14 @@ void read_commands() {
         bzero(arg_1, 64);
         bzero(arg_2, 64);
 
-        fputs("> ", stdout);
+        fputs("> ", stdout);  // for aesthetic purposes
 
+        /* parse command */
         fgets(command, sizeof command, stdin);
         sscanf(command, "%9s %63s %63s\n", action, arg_1, arg_2);
 
+        /* get action from commands
+           ifs check if args are valid */
         if ((strcmp(action, "login") == 0)) {
             if (strlen(arg_1) != 5 || !is_only(NUMERIC, arg_1)) { syntax_error(USER); continue; }
             if (strlen(arg_2) != 8 || !is_only(ALPHANUMERIC, arg_2)) { syntax_error(PASS); continue; }
@@ -633,14 +671,15 @@ void read_commands() {
             remove_user();
 
         } else if (strcmp(action, "exit") == 0) return;
-        else fputs("Invalid action!\n", stdout);
+        else fputs("Invalid action!\n", stdout);  // command not recognized
     }
 }
 
 
 int main (int argc, char const *argv[]){
     parse_args(argc, argv);
-    srand(time(NULL));
+
+    srand(time(NULL));  // init random generator
 
     connect_to_as();
 

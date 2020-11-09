@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <dirent.h>
 #include <ctype.h>
 #include <time.h>
 #include <sys/types.h>
@@ -22,7 +23,7 @@ ssize_t n, nw;
 socklen_t addrlen_as, addrlen_fs;
 struct addrinfo hints_as, hints_fs, *res_as, *res_fs;
 struct sockaddr_in addr_as, addr_fs, sa;
-char buffer[128];
+char buffer[1024];
 
 /* errno */
 extern int errno;
@@ -30,6 +31,13 @@ extern int errno;
 /* Comms info */
 char asip[18], asport[8];
 char fsport[8];
+
+/* Client info */
+char uip[18];
+int uport;
+
+/* Validated operations */
+char op, fname[26];
 
 /* Verbose control flag */
 int verbose_mode = 0;
@@ -49,8 +57,6 @@ void kill_fs(int signum) {  // kill child process if parent exits
 void protocol_error() {  // basic protocol error; reply with "ERR\n"
     char response[5];
 
-    while ((n = read(fd_fs, buffer, 127)) > 0);  // flush socket
-
     bzero(response, 5);
     strcpy(response, "ERR\n");
 
@@ -58,10 +64,13 @@ void protocol_error() {  // basic protocol error; reply with "ERR\n"
 
     while (n > 0) {  // write response
         if ((nw = write(fd_fs, response, n)) <= 0) exit(1);
-        n -= nw; response = &response[nw];
+        n -= nw; strcpy(response, &response[nw]);
     }
 
-    write(fd_fs, response, 5);
+    disconnect_fs();
+
+    exit(1);
+
 }
 
 
@@ -101,7 +110,7 @@ int is_only(int which, char *str) {  // check if string is only numeric, alpha, 
     } else if (which == OP) {
         return strlen(str) == 1 && strchr("RUDLX", str[0]);
 
-    } else if (which == FILE) {
+    } else if (which == FILENAME) {
         int result;
 
         if (strlen(str) > 24) return 0;
@@ -130,7 +139,7 @@ void parse_args(int argc, char const *argv[]) {  // parse flags and flag args
     strncpy(fsport, "59046", 6);
 
     while ((opt = getopt(argc, (char * const*) argv, "q:n:p:v")) != -1) {
-        if (optarg[0] == '-') usage();
+        if (optarg && optarg[0] == '-') usage();
 
         switch (opt) {
             /* check flag; parse args
@@ -196,7 +205,7 @@ void connect_to_as() {  // standard udp connection setup to as
     hints_as.ai_family = AF_INET;
     hints_as.ai_socktype = SOCK_DGRAM;
 
-    errcode = getaddrinfo("tejo.tecnico.ulisboa.pt", "58011", &hints_as, &res_as);
+    errcode = getaddrinfo(asip, asport, &hints_as, &res_as);
     if (errcode != 0) { fputs("Error: Could not connect to AS. Exiting...\n", stderr); exit(1); }
 }
 
@@ -210,6 +219,142 @@ void disconnect_from_as() {  // standard udp disconnect
 void disconnect_fs() {  // disconnect fs sub-server
     freeaddrinfo(res_fs);
     close(fd_fs);
+}
+
+
+int validate(char *uid, char *tid) {
+    char request[20], response[128];
+    char pcode[5];
+    char vuid[6], vtid[5];
+
+    sprintf(request, "VLD %s %s\n", uid, tid);
+
+    n = strlen(request);
+
+    n = sendto(fd_as, request, strlen(request), 0, res_as->ai_addr, res_as->ai_addrlen);
+    if (n == -1) protocol_error();
+
+    /* clear receive buffers, read response */
+    bzero(response, 128);
+    addrlen_as = sizeof(addr_as);
+    n = recvfrom(fd_as, response, 128, 0, (struct sockaddr*) &addr_as, &addrlen_as);
+    if (n == -1) protocol_error();
+
+    if (strcmp(response, "ERR\n") == 0) protocol_error();
+    else {
+        sscanf(response, "%5s %s %s %c", pcode, vuid, vtid, &op);
+
+        if (strcmp(pcode, "CNF") == 0 && strcmp(uid, vuid) == 0 && strcmp(tid, vtid) == 0) {
+            if (op == 'R' || op == 'U' || op == 'D') sscanf(response, "%*s %*s %*s %*c %s", fname);
+            else if (op == 'L' || op == 'X');
+            else if (op == 'E') return 0;
+            else protocol_error();
+
+        } else protocol_error();
+    }
+
+    return 1;
+
+}
+
+
+void list_files() {
+    char request[128], response[1024];
+    char ruid[6], rtid[5];
+    char finfo[50];
+    DIR *udir;
+    struct dirent *udirent;
+    FILE *file;
+    int nfiles = 0, fsize;
+
+    bzero(buffer, 128);
+    if ((n = read(fd_fs, buffer, 127)) > 0)
+        strncpy(request, buffer, 127);  // read request
+
+    sscanf(request, "%s %s", ruid, rtid);
+
+    bzero(response, 1024);
+    if (strlen(ruid) != 5 || !is_only(NUMERIC, ruid) ||
+        strlen(rtid) != 4 || !is_only(NUMERIC, rtid))
+        strcpy(response, "RLS ERR\n");
+
+    else {
+        if (!validate(ruid, rtid)) strcpy(response, "RLS INV\n");
+        else {
+            udir = opendir(ruid);  // open user directory
+
+            if (verbose_mode) fprintf(stdout, "list (IP: %s | PORT: %d)\n", uip, uport);
+
+            if (udir) {
+                bzero(buffer, 1024);
+                while ((udirent = readdir(udir)) != NULL) {
+                    /* ignore current and previous directory */
+                    if (strcmp(udirent->d_name, ".") == 0 ||
+                        strcmp(udirent->d_name, "..") == 0)
+                        continue;
+
+                    chdir(ruid);  // change to user dir
+
+                    /* open file to get size */
+                    file = fopen(udirent->d_name, "r");
+
+                    /* get file size */
+                    if (file == NULL) fsize = 0;
+                    else {
+                        fseek(file, 0, SEEK_END);
+                        fsize = ftell(file);
+                        fseek(file, 0, SEEK_SET);
+
+                        fclose(file);
+                    }
+
+                    chdir(".."); // go back
+
+                    bzero(finfo, 50);
+                    sprintf(finfo, " %.24s %d", udirent->d_name, fsize);
+
+                    strcat(buffer, finfo);
+                    nfiles++;
+                }
+
+                closedir(udir);
+
+                if (nfiles > 0) {
+                    sprintf(response, "RLS %d", nfiles);
+                    strcat(response, buffer);
+                    strcat(response, "\n");
+
+                } else strcpy(response, "RLS EOF\n");
+            } else strcpy(response, "RLS EOF\n");
+        }
+    }
+
+    n = strlen(response);
+
+    while (n > 0) {  // write response
+        if ((nw = write(fd_fs, response, n)) <= 0) exit(1);
+        n -= nw; strcpy(response, &response[nw]);
+    }
+}
+
+
+void retrive_file() {
+
+}
+
+
+void upload_file() {
+
+}
+
+
+void delete_file() {
+
+}
+
+
+void remove_user() {
+
 }
 
 
@@ -253,13 +398,14 @@ void receive_requests() {  // receive requests from socket
             close(fd_fs);
             fd_fs = newfd;
 
-            bzero(buffer, 128);
-            bzero(rcode, 5);
-            while ((n = read(fd_fs, buffer, 4)) > 0) {
-                strncpy(rcode, buffer, 4);  // read request code + space
+            /* store client ip and port */
+            strcpy(uip, inet_ntoa(addr_fs.sin_addr));
+            uport = ntohs(addr_fs.sin_port);
 
-                break;
-            }
+            bzero(buffer, 6);
+            bzero(rcode, 4);
+            if ((n = read(fd_fs, buffer, 4)) > 0)
+                strncpy(rcode, buffer, 4);  // read request code + space
 
             /* perform operation acording to rcode; error if invalid */
             if (strcmp(rcode, "LST ") == 0) list_files();
@@ -268,6 +414,8 @@ void receive_requests() {  // receive requests from socket
             else if (strcmp(rcode, "DEL ") == 0) delete_file();
             else if (strcmp(rcode, "REM ") == 0) remove_user();
             else protocol_error();
+
+            disconnect_fs();  // disconnects fs sub-server
 
             exit(0);  // child exits if successful
 
