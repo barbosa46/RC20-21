@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <dirent.h>
 #include <ctype.h>
-#include <time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/prctl.h>
@@ -222,7 +221,7 @@ void disconnect_fs() {  // disconnect fs sub-server
 }
 
 
-int validate(char *uid, char *tid) {
+int validate(char *uid, char *tid) {  // validate operation with as
     char request[20], response[128];
     char pcode[5];
     char vuid[6], vtid[5];
@@ -231,19 +230,22 @@ int validate(char *uid, char *tid) {
 
     n = strlen(request);
 
+    /* send request */
     n = sendto(fd_as, request, strlen(request), 0, res_as->ai_addr, res_as->ai_addrlen);
     if (n == -1) protocol_error();
 
-    /* clear receive buffers, read response */
+    /* clear receive buffer, read response */
     bzero(response, 128);
     addrlen_as = sizeof(addr_as);
     n = recvfrom(fd_as, response, 128, 0, (struct sockaddr*) &addr_as, &addrlen_as);
     if (n == -1) protocol_error();
 
+    /* check as response */
     if (strcmp(response, "ERR\n") == 0) protocol_error();
     else {
         sscanf(response, "%5s %s %s %c", pcode, vuid, vtid, &op);
 
+        /* reply parsing */
         if (strcmp(pcode, "CNF") == 0 && strcmp(uid, vuid) == 0 && strcmp(tid, vtid) == 0) {
             if (op == 'R' || op == 'U' || op == 'D') sscanf(response, "%*s %*s %*s %*c %s", fname);
             else if (op == 'L' || op == 'X');
@@ -258,13 +260,13 @@ int validate(char *uid, char *tid) {
 }
 
 
-void list_files() {
+void list_files() {  // list user files
     char request[128], response[1024];
     char ruid[6], rtid[5];
     char finfo[50];
     DIR *udir;
+    FILE *ufile;
     struct dirent *udirent;
-    FILE *file;
     int nfiles = 0, fsize;
 
     bzero(buffer, 128);
@@ -276,14 +278,14 @@ void list_files() {
     bzero(response, 1024);
     if (strlen(ruid) != 5 || !is_only(NUMERIC, ruid) ||
         strlen(rtid) != 4 || !is_only(NUMERIC, rtid))
-        strcpy(response, "RLS ERR\n");
+        strcpy(response, "RLS ERR\n");  // format error
 
     else {
-        if (!validate(ruid, rtid)) strcpy(response, "RLS INV\n");
+        if (!validate(ruid, rtid)) strcpy(response, "RLS INV\n");  // validation error
         else {
             udir = opendir(ruid);  // open user directory
 
-            if (verbose_mode) fprintf(stdout, "list (IP: %s | PORT: %d)\n", uip, uport);
+            if (verbose_mode) fprintf(stdout, "%s: list (IP: %s | PORT: %d)\n", ruid, uip, uport);
 
             if (udir) {
                 bzero(buffer, 1024);
@@ -296,16 +298,16 @@ void list_files() {
                     chdir(ruid);  // change to user dir
 
                     /* open file to get size */
-                    file = fopen(udirent->d_name, "r");
+                    ufile = fopen(udirent->d_name, "r");
 
                     /* get file size */
-                    if (file == NULL) fsize = 0;
+                    if (ufile == NULL) fsize = 0;
                     else {
-                        fseek(file, 0, SEEK_END);
-                        fsize = ftell(file);
-                        fseek(file, 0, SEEK_SET);
+                        fseek(ufile, 0, SEEK_END);
+                        fsize = ftell(ufile);
+                        fseek(ufile, 0, SEEK_SET);
 
-                        fclose(file);
+                        fclose(ufile);
                     }
 
                     chdir(".."); // go back
@@ -324,8 +326,8 @@ void list_files() {
                     strcat(response, buffer);
                     strcat(response, "\n");
 
-                } else strcpy(response, "RLS EOF\n");
-            } else strcpy(response, "RLS EOF\n");
+                } else strcpy(response, "RLS EOF\n");  // empty user directory
+            } else strcpy(response, "RLS EOF\n");  // user not in fs
         }
     }
 
@@ -348,13 +350,110 @@ void upload_file() {
 }
 
 
-void delete_file() {
+void delete_file() {  // delete file in fs
+    char request[128], response[128];
+    char ruid[6], rtid[5], rfname[26];
+    DIR *udir;
+    struct dirent *udirent;
 
+    bzero(buffer, 128);
+    if ((n = read(fd_fs, buffer, 127)) > 0)
+        strncpy(request, buffer, 127);  // read request
+
+    sscanf(request, "%s %s %s", ruid, rtid, rfname);
+
+    bzero(response, 128);
+    if (strlen(ruid) != 5 || !is_only(NUMERIC, ruid) ||
+        strlen(rtid) != 4 || !is_only(NUMERIC, rtid) ||
+        !is_only(FILENAME, rfname))
+        strcpy(response, "RDL ERR\n");  // format error
+
+    else {
+        if (!validate(ruid, rtid)) strcpy(response, "RDL INV\n");  // validation error
+        else if (strcmp(fname, rfname) != 0) strcpy(response, "RDL INV\n");  // validation error
+        else {
+            udir = opendir(ruid);  // open user directory
+
+            if (!udir) strcpy(response, "RDL NOK\n"); // user not in fs
+            else {
+                if (verbose_mode) fprintf(stdout, "%s: delete: %s (IP: %s | PORT: %d)\n", ruid, fname, uip, uport);
+
+                strcpy(response, "RDL EOF\n"); // file not found (changed if file is found)
+
+                while ((udirent = readdir(udir)) != NULL) {
+                    /* ignore current and previous directory */
+                    if (strcmp(udirent->d_name, ".") == 0 ||
+                        strcmp(udirent->d_name, "..") == 0)
+                        continue;
+
+                    if (strcmp(udirent->d_name, fname) == 0) {
+                        chdir(ruid);  // change to user dir
+                        remove(udirent->d_name);
+                        chdir(".."); // go back
+
+                        strcpy(response, "RDL OK\n"); break;
+                    }
+                }
+            }
+        }
+    }
+
+    n = strlen(response);
+
+    while (n > 0) {  // write response
+        if ((nw = write(fd_fs, response, n)) <= 0) exit(1);
+        n -= nw; strcpy(response, &response[nw]);
+    }
 }
 
 
-void remove_user() {
+void remove_user() {  // remove user from fs
+    char request[128], response[128];
+    char ruid[6], rtid[5];
+    DIR *udir;
+    struct dirent *udirent;
 
+    bzero(buffer, 128);
+    if ((n = read(fd_fs, buffer, 127)) > 0)
+        strncpy(request, buffer, 127);  // read request
+
+    sscanf(request, "%s %s", ruid, rtid);
+
+    bzero(response, 128);
+    if (strlen(ruid) != 5 || !is_only(NUMERIC, ruid) ||
+        strlen(rtid) != 4 || !is_only(NUMERIC, rtid))
+        strcpy(response, "RRM ERR\n");  // format error
+
+    else {
+        if (!validate(ruid, rtid)) strcpy(response, "RRM INV\n");  // validation error
+        else {
+            udir = opendir(ruid);  // open user directory
+
+            if (!udir) strcpy(response, "RRM NOK\n"); // user not in fs
+            else {
+                if (verbose_mode) fprintf(stdout, "%s: remove (IP: %s | PORT: %d)\n", ruid, uip, uport);
+
+                while ((udirent = readdir(udir)) != NULL) {
+                    /* ignore current and previous directory */
+                    if (strcmp(udirent->d_name, ".") == 0 ||
+                        strcmp(udirent->d_name, "..") == 0)
+                        continue;
+
+                    chdir(ruid);  // change to user dir
+                    remove(udirent->d_name);
+                    chdir(".."); // go back
+
+                } remove(ruid); strcpy(response, "RRM OK\n");
+            }
+        }
+    }
+
+    n = strlen(response);
+
+    while (n > 0) {  // write response
+        if ((nw = write(fd_fs, response, n)) <= 0) exit(1);
+        n -= nw; strcpy(response, &response[nw]);
+    }
 }
 
 
