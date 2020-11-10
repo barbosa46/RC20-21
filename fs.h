@@ -25,6 +25,7 @@ void connect_to_as();
 void setup_fsserver();
 void disconnect_from_as();
 void disconnect_fs();
+void change_to_dusers();
 int validate(char *uid, char *tid);
 void list_files();
 void retrive_file();

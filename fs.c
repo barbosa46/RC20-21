@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -221,6 +222,18 @@ void disconnect_fs() {  // disconnect fs sub-server
 }
 
 
+void change_to_dusers() {
+    DIR *udir;
+
+    udir = opendir("USERS");
+
+    if (!udir) mkdir("USERS", 0755);
+    else closedir(udir);
+
+    chdir("USERS");
+}
+
+
 int validate(char *uid, char *tid) {  // validate operation with as
     char request[20], response[128];
     char pcode[5];
@@ -340,13 +353,177 @@ void list_files() {  // list user files
 }
 
 
-void retrive_file() {
+void retrive_file() {  // retrieve file from fs
+    char request[128], response[1024];
+    char ruid[6], rtid[5], rfname[26];
+    DIR *udir;
+    FILE *toretrieve;
+    int fsize;
 
+    bzero(buffer, 128);
+    if ((n = read(fd_fs, buffer, 127)) > 0)
+        strncpy(request, buffer, 127);  // read request
+
+    sscanf(request, "%s %s %s", ruid, rtid, rfname);
+
+    bzero(response, 128);
+    if (strlen(ruid) != 5 || !is_only(NUMERIC, ruid) ||
+        strlen(rtid) != 4 || !is_only(NUMERIC, rtid) ||
+        !is_only(FILENAME, rfname))
+        strcpy(response, "RRT ERR\n");  // format error
+
+    else {
+        if (!validate(ruid, rtid)) strcpy(response, "RRT INV\n");  // validation error
+        else if (strcmp(fname, rfname) != 0) strcpy(response, "RRT INV\n");  // validation error
+        else {
+            udir = opendir(ruid);  // open user directory
+
+            if (!udir) strcpy(response, "RRT NOK\n"); // user not in fs
+            else {
+                closedir(udir);
+
+                if (verbose_mode) fprintf(stdout, "%s: retrieve: %s (IP: %s | PORT: %d)\n", ruid, fname, uip, uport);
+
+                chdir(ruid);  // change to user dir
+
+                toretrieve = fopen(fname, "r");
+                if (toretrieve == NULL) strcpy(response, "RRT EOF\n"); // file not found
+                else {
+                    /* get file size */
+                    fseek(toretrieve, 0, SEEK_END);
+                    fsize = ftell(toretrieve);
+                    fseek(toretrieve, 0, SEEK_SET);
+
+                    sprintf(response, "RRT OK %d ", fsize);  // successful retrieve
+
+                    n = strlen(response);
+
+                    while (n > 0) {  // write response
+                        if ((nw = write(fd_fs, response, n)) <= 0) exit(1);
+                        n -= nw; strcpy(response, &response[nw]);
+                    }
+
+                    /* write data until eof */
+                    while (!feof(toretrieve)) {
+                        bzero(response, 1024);
+                        n = fread(response, 1, 1023, toretrieve);
+
+                        while (n > 0) {  // write response
+                            if ((nw = write(fd_fs, response, n)) <= 0) exit(1);
+                            n -= nw; strcpy(response, &response[nw]);
+                        }
+
+                    } write(fd_fs, "\n", 1); chdir(".."); return;
+                } chdir(".."); // go back
+            }
+        }
+    }
+
+    n = strlen(response);
+
+    while (n > 0) {  // write response
+        if ((nw = write(fd_fs, response, n)) <= 0) exit(1);
+        n -= nw; strcpy(response, &response[nw]);
+    }
 }
 
 
 void upload_file() {
+    char request[1024], response[128];
+    char ruid[6], rtid[5], rfname[26];
+    DIR *udir;
+    FILE *uploaded;
+    struct dirent *udirent;
+    int nfiles = 0, fsize = -1;
+    int offset = 0, bytes_read = 0, first = 1, nmem;
 
+    bzero(buffer, 1024);
+    bzero(request, 1024);
+    if ((n = read(fd_fs, buffer, 1023)) > 0)
+        memcpy(request, buffer, 1023);  // read request
+
+    nmem = n;  // store n
+
+    sscanf(request, "%s %s %s %d %n", ruid, rtid, rfname, &fsize, &offset);
+
+    bzero(response, 128);
+    if (strlen(ruid) != 5 || !is_only(NUMERIC, ruid) ||
+        strlen(rtid) != 4 || !is_only(NUMERIC, rtid) ||
+        !is_only(FILENAME, rfname) || fsize == -1)
+        strcpy(response, "RUP ERR\n");  // format error
+
+    else {
+        if (!validate(ruid, rtid)) strcpy(response, "RUP INV\n");  // validation error
+        else if (strcmp(fname, rfname) != 0) strcpy(response, "RUP INV\n");  // validation error
+        else {
+            udir = opendir(ruid);  // open user directory
+
+            if (!udir) { mkdir(ruid, 0777); udir = opendir(ruid); } // user not in fs
+
+            if (verbose_mode) fprintf(stdout, "%s: upload: %s (IP: %s | PORT: %d)\n", ruid, fname, uip, uport);
+
+            while ((udirent = readdir(udir)) != NULL) {
+                /* ignore current and previous directory */
+                if (strcmp(udirent->d_name, ".") == 0 ||
+                    strcmp(udirent->d_name, "..") == 0)
+                    continue;
+
+                // file already exists
+                if (strcmp(udirent->d_name, fname) == 0) { strcpy(response, "RUP DUP\n"); break; }
+
+                nfiles++;
+            }
+
+            if (nfiles >= 15) strcpy(response, "RUP FULL\n");  // user directory already at max capacity
+            else if (strcmp(response, "RUP DUP\n") != 0) {  // file can be created
+                chdir(ruid);
+
+                /* create file */
+                uploaded = fopen(fname, "w");
+                if (uploaded == NULL) protocol_error();
+
+                n = nmem;  // retrieve n value
+
+                while (n > 0) {
+                    if (first) {
+                        /* start writing to file */
+                        fwrite(request + offset, 1, n - offset, uploaded);
+                        bytes_read -= offset;
+
+                        first = 0;
+
+                    } else {
+                        bzero(request, 1024);
+                        memcpy(request, buffer, 1023);
+
+                        fwrite(request, 1, n, uploaded); // if not first loop, write to file
+                    }
+
+                    bytes_read += n;  // keep count of bytes read
+                    if (bytes_read >= fsize) break;
+
+                    bzero(buffer, 1024);
+                    n = read(fd_fs, buffer, 1023);
+                }
+
+                fseek(uploaded, 0, SEEK_SET);
+                ftruncate(fileno(uploaded), fsize);  // delete last char (\n)
+
+                fclose(uploaded);
+
+                chdir("..");
+
+                strcpy(response, "RUP OK\n");
+            }
+        }
+    }
+
+    n = strlen(response);
+
+    while (n > 0) {  // write response
+        if ((nw = write(fd_fs, response, n)) <= 0) exit(1);
+        n -= nw; strcpy(response, &response[nw]);
+    }
 }
 
 
@@ -354,7 +531,7 @@ void delete_file() {  // delete file in fs
     char request[128], response[128];
     char ruid[6], rtid[5], rfname[26];
     DIR *udir;
-    struct dirent *udirent;
+    FILE *todelete;
 
     bzero(buffer, 128);
     if ((n = read(fd_fs, buffer, 127)) > 0)
@@ -376,24 +553,22 @@ void delete_file() {  // delete file in fs
 
             if (!udir) strcpy(response, "RDL NOK\n"); // user not in fs
             else {
+                closedir(udir);
+
                 if (verbose_mode) fprintf(stdout, "%s: delete: %s (IP: %s | PORT: %d)\n", ruid, fname, uip, uport);
 
-                strcpy(response, "RDL EOF\n"); // file not found (changed if file is found)
+                chdir(ruid);  // change to user dir
 
-                while ((udirent = readdir(udir)) != NULL) {
-                    /* ignore current and previous directory */
-                    if (strcmp(udirent->d_name, ".") == 0 ||
-                        strcmp(udirent->d_name, "..") == 0)
-                        continue;
+                todelete = fopen(fname, "r");
+                if (todelete == NULL) strcpy(response, "RDL EOF\n"); // file not found
+                else {
+                    fclose(todelete);
+                    remove(fname);
 
-                    if (strcmp(udirent->d_name, fname) == 0) {
-                        chdir(ruid);  // change to user dir
-                        remove(udirent->d_name);
-                        chdir(".."); // go back
-
-                        strcpy(response, "RDL OK\n"); break;
-                    }
+                    strcpy(response, "RDL OK\n");  // successful delete
                 }
+
+                chdir(".."); // go back
             }
         }
     }
@@ -443,7 +618,7 @@ void remove_user() {  // remove user from fs
                     remove(udirent->d_name);
                     chdir(".."); // go back
 
-                } remove(ruid); strcpy(response, "RRM OK\n");
+                } closedir(udir); remove(ruid); strcpy(response, "RRM OK\n");
             }
         }
     }
@@ -528,6 +703,8 @@ int main(int argc, char const *argv[]){
 
     setup_fsserver();
     connect_to_as();
+
+    change_to_dusers();
 
     receive_requests();
 

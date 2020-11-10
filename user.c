@@ -10,18 +10,22 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <errno.h>
 
 #include "user.h"
 
 
 /* Socket vars */
 int fd_as, fd_fs, errcode;
-ssize_t n;
+ssize_t n, nw;
 socklen_t addrlen;
 struct addrinfo hints_as, *res_as, hints_fs, *res_fs;
 struct sockaddr_in addr_as, addr_fs, sa;
 char recvline[128];
 char buffer[1024];
+
+/* errno */
+extern int errno;
 
 /* Comms info */
 char asip[18], asport[8];
@@ -342,7 +346,7 @@ void list_files() {  // list files (fs operation)
         strncpy(response, buffer, 127);
 
         /* reply parsing */
-        if(strcmp(response, "ERR\n") == 0) {
+        if (strcmp(response, "ERR\n") == 0) {
             message_error(UNK); fclose(temp); remove("temp.txt"); disconnect_from_fs(); return; }
         if (strcmp(response, "RLS EOF\n") == 0) {
             fprintf(stdout, "User %s has no files in his directory.\n", uid);
@@ -413,12 +417,12 @@ void retrieve_file(char *fname) {  // retrieve file (fs operation)
     bzero(buffer, 1024);
     n = read(fd_fs, buffer, 1023);
 
-    while (n  > 0) {
+    while (n > 0) {
         bzero(response, 1024);
         memcpy(response, buffer, 1023);
 
         /* reply parsing */
-        if(strcmp(response, "ERR\n") == 0) {
+        if (strcmp(response, "ERR\n") == 0) {
             message_error(UNK); fclose(file); remove(fname); disconnect_from_fs(); return; }
         if (strcmp(response, "RRT EOF\n") == 0) {
             fprintf(stdout, "Error: %s is not avaiable in user directory.\n", fname);
@@ -449,7 +453,7 @@ void retrieve_file(char *fname) {  // retrieve file (fs operation)
         } else fwrite(response, 1, n, file); // if not first loop, write to file
 
         bytes_read += n;  // keep count of bytes read
-        if (bytes_read >= fsize && response[strlen(response) - 1] == '\n') break;
+        if (bytes_read >= fsize) break;
 
         bzero(buffer, 1024);
         n = read(fd_fs, buffer, 1023);
@@ -492,15 +496,19 @@ void upload_file(char *fname) {  // upload file (fs operation)
     write(fd_fs, request, len);
 
     /* while not end of file, write to socket */
-    while(!feof(file)) {
+    while (!feof(file)) {
         bzero(request, 1024);
         n = fread(request, 1, 1023, file);
 
-        if (write(fd_fs, request, n) != n) {
-            fputs("Error: Could not send request. Try again!\n", stderr);
-            fclose(file); disconnect_from_fs(); return; }
+        while (n > 0 && errno != ECONNRESET) {  // write response (ignore fs disconnect)
+            if ((nw = write(fd_fs, request, n)) <= 0 && errno != ECONNRESET) {
+                fputs("Error: Could not send request. Try again!\n", stderr);
+                disconnect_from_fs(); return;
 
-    } write(fd_fs, "\n", 1);
+            } n -= nw; strcpy(request, &request[nw]);
+        }
+
+    } if (errno != ECONNRESET) write(fd_fs, "\n", 1);
 
     fclose(file);
 
@@ -513,7 +521,7 @@ void upload_file(char *fname) {  // upload file (fs operation)
     }
 
     /* reply parsing */
-    if(strcmp(response, "ERR\n") == 0) message_error(UNK);
+    if (strcmp(response, "ERR\n") == 0) message_error(UNK);
     if (strcmp(response, "RUP OK\n") == 0)
         fprintf(stdout, "Uploaded %s (%d bytes)\n", fname, fsize);
     if (strcmp(response, "RUP NOK\n") == 0)
@@ -556,7 +564,7 @@ void delete_file(char *fname) {  // delete file (fs operation)
     }
 
     /* reply parsing */
-    if(strcmp(response, "ERR\n") == 0) {
+    if (strcmp(response, "ERR\n") == 0) {
         message_error(UNK); disconnect_from_fs(); return; }
     if (strcmp(response, "RDL EOF\n") == 0) {
         fprintf(stdout, "Error: %s is not avaiable in user directory.\n", fname);
@@ -599,7 +607,7 @@ void remove_user() {  // remove user (fs operation)
     }
 
     /* reply parsing */
-    if(strcmp(response, "ERR\n") == 0) message_error(UNK);
+    if (strcmp(response, "ERR\n") == 0) message_error(UNK);
     if (strcmp(response, "RRM OK\n") == 0)
         fprintf(stdout, "User %s was successfully removed from FS\n", uid);
     if (strcmp(response, "RRM NOK\n") == 0)
@@ -671,6 +679,7 @@ void read_commands() {  // read commands from stdin
             remove_user();
 
         } else if (strcmp(action, "exit") == 0) return;
+
         else fputs("Invalid action!\n", stdout);  // command not recognized
     }
 }
