@@ -123,9 +123,9 @@ void parse_args(int argc, char const *argv[]) { // parse flags and flag args
     if (argc > 9) usage();  // numargs in range
 
     /* default values */
-    strncpy(asip, "localhost", 16);
+    strncpy(asip, "127.0.0.1", 16);
     strncpy(asport, "58046", 6);
-    strncpy(fsip, "localhost", 16);
+    strncpy(fsip, "127.0.0.1", 16);
     strncpy(fsport, "59046", 6);
 
     while ((opt = getopt(argc, (char * const*) argv, "n:p:m:q:")) != -1) {
@@ -274,6 +274,7 @@ void request_operation(char *fop, char *fname) {  // request operation (as comma
     }
 
     /* reply parsing */
+    if (strcmp(response, "RRQ OK\n") == 0) { fputs("VC successfully sent (check PD)\n", stdout); return; }
     if (strcmp(response, "RRQ ELOG\n") == 0) { fputs("Error: No user is logged in. Try again!\n", stderr); return; }
     if (strcmp(response, "RRQ EPD\n") == 0) { message_error(REQ); return; }
     if (strcmp(response, "RRQ EUSER\n") == 0) { message_error(LOGIN); return; }
@@ -459,7 +460,7 @@ void retrieve_file(char *fname) {  // retrieve file (fs operation)
         n = read(fd_fs, buffer, 1023);
     }
 
-    fprintf(stdout, "Retrieved %s\n", fname);
+    fprintf(stdout, "Retrieved %s (stored in current directory)\n", fname);
 
     fseek(file, 0, SEEK_SET);
     ftruncate(fileno(file), fsize);  // delete last char (\n)

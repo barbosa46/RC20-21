@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/prctl.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -21,6 +22,7 @@ socklen_t addrlen_client, addrlen_server;
 struct addrinfo hints_client, hints_server, *res_client, *res_server;
 struct sockaddr_in addr_client, addr_server, sa;
 char buffer[128];
+struct timeval timeout;  // for timeout
 
 /* Comms info */
 char pdip[18], pdport[8];
@@ -141,6 +143,12 @@ void connect_to_as() {  // standard udp connection setup to as
 
     errcode = getaddrinfo(asip, asport, &hints_client, &res_client);
     if (errcode != 0) { fputs("Error: Could not connect to AS. Exiting...\n", stderr); exit(1); }
+
+    timeout.tv_sec = 5;
+    timeout.tv_usec = 0;
+    if (setsockopt(fd_client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        fputs("Error: Could not set up timeout. Exiting...\n", stderr); exit(1);
+    }
 }
 
 

@@ -24,6 +24,7 @@ socklen_t addrlen_as, addrlen_fs;
 struct addrinfo hints_as, hints_fs, *res_as, *res_fs;
 struct sockaddr_in addr_as, addr_fs, sa;
 char buffer[1024];
+struct timeval timeout;  // for timeout
 
 /* errno */
 extern int errno;
@@ -134,7 +135,7 @@ void parse_args(int argc, char const *argv[]) {  // parse flags and flag args
     if (argc > 8) usage();  // numargs in range
 
     /* default values */
-    strncpy(asip, "localhost", 16);
+    strncpy(asip, "127.0.0.1", 16);
     strncpy(asport, "58046", 6);
     strncpy(fsport, "59046", 6);
 
@@ -207,6 +208,12 @@ void connect_to_as() {  // standard udp connection setup to as
 
     errcode = getaddrinfo(asip, asport, &hints_as, &res_as);
     if (errcode != 0) { fputs("Error: Could not connect to AS. Exiting...\n", stderr); exit(1); }
+
+    timeout.tv_sec = 5;
+    timeout.tv_usec = 0;
+    if (setsockopt(fd_as, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        fputs("Error: Could not set up timeout. Exiting...\n", stderr); exit(1);
+    }
 }
 
 
@@ -260,10 +267,23 @@ int validate(char *uid, char *tid) {  // validate operation with as
 
         /* reply parsing */
         if (strcmp(pcode, "CNF") == 0 && strcmp(uid, vuid) == 0 && strcmp(tid, vtid) == 0) {
-            if (op == 'R' || op == 'U' || op == 'D') sscanf(response, "%*s %*s %*s %*c %s", fname);
-            else if (op == 'L' || op == 'X');
-            else if (op == 'E') return 0;
-            else protocol_error();
+            if (op == 'R' || op == 'U' || op == 'D') {
+                sscanf(response, "%*s %*s %*s %*c %s", fname);
+
+                if (verbose_mode)
+                    fprintf(stdout, "%s: validate %c %s (IP: %s | PORT: %s)\n", vuid, op, fname, asip, asport);
+
+            } else if (op == 'L' || op == 'X') {
+                if (verbose_mode)
+                    fprintf(stdout, "%s: validate %c (IP: %s | PORT: %s)\n", vuid, op, asip, asport);
+
+            } else if (op == 'E') {
+                if (verbose_mode)
+                    fprintf(stdout, "%s: validate invalid (IP: %s | PORT: %s)\n", vuid, asip, asport);
+
+                return 0;
+
+            } else protocol_error();
 
         } else protocol_error();
     }
@@ -662,6 +682,7 @@ void receive_requests() {  // receive requests from socket
 
         } else {
             signal(SIGTERM, kill_fs);  // kill fs sub-server if SIGTERM received
+            setvbuf(stdout, NULL, _IONBF, 0);  // make stdout unbuffered
 
             n = prctl(PR_SET_PDEATHSIG, SIGTERM);  // send SIGTERM to child if parent exits
             if (n == -1) { fputs("Error: Could not fork(). Exiting...\n", stderr); exit(1); }
