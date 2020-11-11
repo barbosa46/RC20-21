@@ -49,6 +49,7 @@ void usage() {
     exit(1);
 }
 
+
 void kill_fs(int signum) {  // kill child process if parent exits
     disconnect_fs();
     exit(0);
@@ -668,7 +669,7 @@ void receive_requests() {  // receive requests from socket
         addrlen_fs = sizeof(addr_fs);
 
         do newfd = accept(fd_fs, (struct sockaddr*) &addr_fs, &addrlen_fs); while (newfd == -1 && errno == EINTR);
-        if(newfd == -1) exit(EXIT_FAILURE);
+        if (newfd == -1) exit(EXIT_FAILURE);
 
         ppid = getpid();
         pid = fork();
@@ -678,7 +679,7 @@ void receive_requests() {  // receive requests from socket
         /* fork; continue listening if parent, perform operation if child */
         if (pid) {
             do ret = close(newfd); while(ret == -1 && errno == EINTR);  // close new socket
-            if(ret == -1) { fputs("Error: Could not fork(). Exiting...\n", stderr); exit(1); }
+            if (ret == -1) { fputs("Error: Could not fork(). Exiting...\n", stderr); exit(1); }
 
         } else {
             signal(SIGTERM, kill_fs);  // kill fs sub-server if SIGTERM received
