@@ -35,11 +35,12 @@ char pdip[18], pdport[8];
 extern int errno;
 
 /* Client info */
-char cip[18];
+char cip[18], cuid[6] = "";
 int cport;
 
 /* Validation data */
 int vc = 9999, tid = 9999, rid = 9999;
+char rop, rfname[26];
 
 /* Verbose control flag */
 int verbose_mode = 0;
@@ -198,7 +199,7 @@ void setup_udpserver() {  // sets up udp socket
     if (errcode != 0) { fputs("Error: Could not get AS UDP address. Exiting...\n", stderr); exit(1); }
 
     n = bind(fd_udp, res_udp->ai_addr, res_udp->ai_addrlen);
-    if (n == -1) { fputs("Error: Could not bind socket. Exiting...\n", stderr); exit(1); }
+    if (n == -1) { fputs("Error: Could not bind AS. Exiting...\n", stderr); exit(1); }
 }
 
 
@@ -212,31 +213,34 @@ void setup_tcpserver() {  // set up tcp socket
     hints_tcp.ai_flags = AI_PASSIVE;
 
     errcode = getaddrinfo(NULL, asport, &hints_tcp, &res_tcp);
-    if (errcode != 0) { fputs("Error: Could not bind FS. Exiting...\n", stderr); exit(1); }
+    if (errcode != 0) { fputs("Error: Could not get AS TCP address. Exiting...\n", stderr); exit(1); }
 
     n = bind(fd_tcp, res_tcp->ai_addr, res_tcp->ai_addrlen);
-    if (n == -1) { fputs("Error: Could not bind FS. Exiting...\n", stderr); exit(1); }
+    if (n == -1) { fputs("Error: Could not bind AS. Exiting...\n", stderr); exit(1); }
 
     if (listen(fd_tcp, BACKLOG) == -1) { fputs("Error: Could not set up FS. Exiting...\n", stderr); exit(1); }
 }
 
 
-void connect_to_pdserver() {  // connect to pd server
+int connect_to_pdserver() {  // connect to pd server
     fd_pdserver = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd_pdserver == -1) { fputs("Error: Could not create socket. Exiting...\n", stderr); exit(1); }
+    if (fd_pdserver == -1) { strcpy(buffer, "RRQ EPD\n"); return 0; }
 
     memset(&hints_pdserver, 0, sizeof hints_pdserver);
     hints_pdserver.ai_family = AF_INET;
     hints_pdserver.ai_socktype = SOCK_DGRAM;
 
     errcode = getaddrinfo(pdip, pdport, &hints_pdserver, &res_pdserver);
-    if (errcode != 0) { fputs("Error: Could not connect to AS. Exiting...\n", stderr); exit(1); }
+    if (errcode != 0) { strcpy(buffer, "RRQ EPD\n"); return 0; }
 
     timeout.tv_sec = 5;
     timeout.tv_usec = 0;
     if (setsockopt(fd_pdserver, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-        fputs("Error: Could not set up timeout. Exiting...\n", stderr); exit(1);
+        strcpy(buffer, "RRQ EPD\n"); return 0;
     }
+
+    return 1;
+
 }
 
 
@@ -424,7 +428,7 @@ void validate_operation() {
                 else if (op == 'L' || op == 'X') sprintf(response, "CNF %s %s %c\n", uid, tid, op);
                 else sprintf(response, "CNF %s %s E\n", uid, tid);  // unknown op
             }
-            
+
             fclose(tidfile);
 
         } else sprintf(response, "CNF %s %s E\n", uid, tid);  // user not found
@@ -437,122 +441,224 @@ void validate_operation() {
 }
 
 
-/*int findUser(char *username){
-    char direc[32];
-    strcpy(direc,"USERS/");
-    strcat(direc,username);
-    DIR* dir = opendir(username);
-    if (!dir){
-        closedir(dir);
-        return 1;
+int send_vc(char *uid, char op, char *fname) {
+    char request[128], response[128];
+    char ruid[8], status[5];
+    FILE *reg;
+
+    bzero(request, 128);
+    bzero(buffer, 128);
+
+    /* check if operation involves fname */
+    if (strcmp(fname, "") == 0) sprintf(request, "VLC %s %d %c\n", uid, vc, op);
+    else sprintf(request, "VLC %s %d %c %s\n", uid, vc, op, fname);
+
+    chdir(uid);
+
+    strcpy(response, "RRG OK\n");  // default is reg ok
+
+    // get pd info
+    if ((reg = fopen("reg.txt", "r"))) fscanf(reg, "%s %s", pdip, pdport);
+
+    if (!connect_to_pdserver()) return 0;
+
+    n = sendto(fd_pdserver, request, strlen(request), 0, res_pdserver->ai_addr, res_pdserver->ai_addrlen);
+    if (n == -1) { strcpy(buffer, "RRQ EPD\n"); return 0; }  // if not able to send
+
+    bzero(response, 128);
+
+    addrlen_pdserver = sizeof(addr_pdserver);
+    n = recvfrom(fd_pdserver, response, 128, 0,( struct sockaddr *) &addr_pdserver, &addrlen_pdserver);
+    if (n == -1) { strcpy(buffer, "RRQ EPD\n"); return 0; }  // if not able to receive
+    response[n] = '\0';
+
+    sscanf(response, "%*s %s %s", ruid, status);
+    if (strcmp(ruid, uid) != 0 || strcmp(status, "OK") != 0) {
+        strcpy(buffer, "RRQ EUSER\n"); return 0; }
+
+    disconnect_from_pdserver();
+
+    return 1;
+}
+
+
+void login_user() {
+    char response[128], request[128];
+    char uid[8], pass[10], storedpass[10];
+    FILE *login, *passfile;
+    DIR *udir;
+
+    bzero(request, 128);
+    bzero(buffer, 128);
+    if ((n = read(fd_tcp, buffer, 127)) > 0)
+        strncpy(request, buffer, 127);  // read request code + space
+
+    sscanf(request, "%s %s", uid, pass);
+
+    bzero(response, 128);
+    if (strlen(uid) != 5 || !is_only(NUMERIC, uid) || strlen(pass) != 8 ||
+        !is_only(ALPHANUMERIC, pass))
+        strcpy(response, "RLO ERR\n");
+
+
+    if (verbose_mode) fprintf(stdout, "%s: login (IP: %s | PORT: %d)\n", uid, cip, cport);
+
+    udir = opendir(uid);
+
+    if (!udir) strcpy(response, "RLO ERR\n");  // check if user exists
+    else {
+        closedir(udir);
+
+        chdir(uid);
+
+        passfile = fopen("pass.txt", "r");
+
+        if (!passfile) strcpy(response, "RLO ERR\n");  // user removed
+        else {
+            fscanf(passfile, "%s", storedpass);  // check if pass is ok
+
+            /* if pass is different, log nok */
+            if (strcmp(pass, storedpass) != 0) strcpy(response, "RLO NOK\n");
+            else {
+                strcpy(response, "RLO OK\n");
+
+                login = fopen("login.txt", "w");  // create temp login file
+                fclose(login);
+
+                bzero(cuid, 6);
+                strcpy(cuid, uid);
+            }
+        }
+
+        chdir("..");
     }
-    return -1;
-}
 
-void userNotFound(){
-    printf("USER NOT FOUND \n");
-}
-void userAlreadyRegistered(char* user){
-    printf("User %s already registered.\n",user);
-}
+    n = strlen(response);
 
-void wrongPasswd(){
-    printf("Wrong Password\n");
-}
-
-void wrongVC(){
-    printf("Wrong Validation Code\n");
-}
-
-
-void logSuccess(){
-    printf("RLO OK\n");
-}
-
-void regSuccess(){
-    printf("RRG OK\n");
-}
-
-char * getcommand(char* string){
-    int i = 0;
-    char* command = (char*)malloc(sizeof(char)*4);
-    for( i = 0; i < 3; ++i){
-        command[i]=string[i];
-    }
-    return command;
-}
-void sendVC(int vc){
-    printf("%d\n",vc);
-}
-
-void validateSuccess(){
-    printf("RAU\n");
-}
-void validate(char *command){
-    char username[8];
-    int localVC, localTID;
-    sscanf(command,"AUT %s %d %d",username, &localTID, &localVC);
-
-    if(localVC != vc){
-        wrongVC();
-    }
-    else
-        validateSuccess();
-}
-
-void require(char *command){
-    generate_vc();
-    char username[8], op[3], file[32];
-    sscanf(command,"REG %s %d %s %s",username, &rid, op, file);
-    if(!findUser(username)){
-        userNotFound();
-        return;
-    }
-    sendVC(vc);
-}
-
-void registerU(char * command){
-    int i = 0;
-    int len = strlen(command);
-    char username[8], passwd[8];
-    char dir[32];
-    FILE* passwdfile;
-    strcpy(dir,"USERS/");
-    sscanf(command,"REG %s %s",username,passwd);
-    strcat(dir,username);
-    if(mkdir(dir, 0755) != 0)
-        userAlreadyRegistered(username);
-    else{
-        strcat(dir,"/passwd.txt");
-        passwdfile=fopen(dir,"w");
-        fprintf(passwdfile,"%s",passwd);
-
-        regSuccess();
+    while (n > 0) {  // write response
+        if ((nw = write(fd_tcp, response, n)) <= 0) exit(1);
+        n -= nw; strcpy(response, &response[nw]);
     }
 }
 
-void login(char *command) {
-    char username[8], passwd[8];
-    char dir[32], match[8];
-    FILE *passwdfile;
-    DIR *directory;
-    sscanf(command,"LOG %s %s",username,passwd);
-    strcpy(dir,"USERS/");
-    strcat(dir,username);
-    directory = opendir(dir);
-    if(!directory){
-        closedir(directory);
-        userNotFound();
-        return;
+
+void request_operation() {
+    char response[128], request[128];
+    char uid[8], op[3], fname[32];
+    DIR* udir;
+
+    bzero(request, 128);
+    bzero(buffer, 128);
+    if ((n = read(fd_tcp, buffer, 127)) > 0)
+        strncpy(request, buffer, 127);  // read request code + space
+
+    sscanf(request,"%s %d %2s %s", uid, &rid, op, fname);
+
+    bzero(response, 128);
+    if (strlen(uid) != 5 || !is_only(NUMERIC, uid) || rid < 0 || rid > 9999)
+        strcpy(response, "RRQ ERR\n");
+
+    if (!is_only(OP, op)) strcpy(response, "RRQ FOP\n");
+
+    if (strchr("RUD", op[0])|| !is_only(FILENAME, fname)) {
+        strcpy(response, "RRQ ERR\n");
+
+        if (verbose_mode) fprintf(stdout, "%s: request - %c %s (IP: %s | PORT: %d)\n", uid, op[0], fname, cip, cport);
+
+    } else {
+        strcpy(fname, "");
+
+        if (verbose_mode) fprintf(stdout, "%s: request - %c (IP: %s | PORT: %d)\n", uid, op[0], cip, cport);
     }
-    strcat(dir,"/passwd.txt");
-    passwdfile = fopen(dir,"r");
-    fread(match,9,1, passwdfile);
-    if(strcmp(match,passwd) == 0)
-        logSuccess();
-    else
-        wrongPasswd();
-}*/
+
+    udir = opendir(uid);
+
+    if (!udir) strcpy(response, "RRQ EUID\n");
+    else {
+        closedir(udir);
+
+        chdir(uid);
+
+        if (fopen("login.txt", "r")) {
+            generate_vc();
+
+            if (send_vc(uid, op[0], fname)) {
+                strcpy(response, "RRQ OK\n");
+
+                /* save op info */
+                rop = op[0];
+                strcpy(rfname, fname);
+
+            } else strcpy(response, buffer);  // if error use buffer info
+        } else strcpy(response, "RRQ EUSER\n");  // user not found
+
+        chdir("..");
+        
+    }
+
+    n = strlen(response);
+
+    while (n > 0) {  // write response
+        if ((nw = write(fd_tcp, response, n)) <= 0) exit(1);
+        n -= nw; strcpy(response, &response[nw]);
+    }
+}
+
+
+void authenticate_operation() {
+    char request[128], response[128];
+    char uid[8];
+    int rvc, rrid;
+    FILE *tidfile;
+    DIR *udir;
+
+    bzero(buffer, 128);
+    bzero(request, 128);
+    if ((n = read(fd_tcp, buffer, 127)) > 0)
+        strncpy(request, buffer, 127);  // read request code + space
+
+    sscanf(request,"%s %d %d", uid, &rrid, &rvc);
+
+    bzero(response, 128);
+    if (strlen(uid) != 5 || !is_only(NUMERIC, uid) || rrid < 0 ||
+        rrid > 9999 || rvc < 0 || rvc > 9999)
+        strcpy(response, "RAU 0\n");
+
+    if (verbose_mode) fprintf(stdout, "%s: authenticate - %d (IP: %s | PORT: %d)\n", uid, rvc, cip, cport);
+
+    if (rvc != vc) strcpy(response, "RAU 0\n");
+    else {
+        generate_tid();
+
+        sprintf(response, "RAU %d\n", tid);
+
+        udir = opendir(uid);
+
+        if (udir) {
+            closedir(udir);
+
+            chdir(uid);
+
+            /* create tid file */
+            tidfile = fopen("tid.txt", "w");
+            if (tidfile) {
+                if (strcmp(rfname, "") == 0) fprintf(tidfile, "%d %c", tid, rop);
+                else fprintf(tidfile, "%d %c %s", tid, rop, rfname);
+            }
+
+            fclose(tidfile);
+
+            chdir("..");
+        }
+    }
+
+    n = strlen(response);
+
+    while (n > 0) {  // write response
+        if ((nw = write(fd_tcp, response, n)) <= 0) exit(1);
+        n -= nw; strcpy(response, &response[nw]);
+    }
+}
 
 
 void handle_udp() {
@@ -651,17 +757,30 @@ void handle_tcp() {  // receive requests from tcp socket
             strcpy(cip, inet_ntoa(addr_tcp.sin_addr));
             cport = ntohs(addr_tcp.sin_port);
 
+            while (1) {
+                bzero(buffer, 6);
+                bzero(rcode, 4);
+                if ((n = read(fd_tcp, buffer, 4)) > 0)
+                    strncpy(rcode, buffer, 4);  // read request code + space
 
-            bzero(buffer, 6);
-            bzero(rcode, 4);
-            if ((n = read(fd_tcp, buffer, 4)) > 0)
-                strncpy(rcode, buffer, 4);  // read request code + space
+                if (n <= 0) break;
 
-            /* perform operation acording to rcode; error if invalid */
-            /*if (strcmp(rcode, "LOG ") == 0) login_user();
-            else if (strcmp(rcode, "REQ ") == 0) request_operation();
-            else if (strcmp(rcode, "AUT ") == 0) authenticate_operation();
-            else protocol_error_tcp();*/
+                /* perform operation acording to rcode; error if invalid */
+                if (strcmp(rcode, "LOG ") == 0) login_user();
+                else if (strcmp(rcode, "REQ ") == 0) request_operation();
+                else if (strcmp(rcode, "AUT ") == 0) authenticate_operation();
+                else protocol_error_tcp();
+            }
+
+            if (strcmp(cuid, "") != 0) {  // user logged in
+                chdir(cuid);
+
+                if (verbose_mode) fprintf(stdout, "%s: logout (IP: %s | PORT: %d)\n", cuid, cip, cport);
+
+                remove("login.txt");
+
+                chdir("..");
+            }
 
             disconnect_tcpserver();  // disconnects tcp sub-server
 
@@ -693,12 +812,16 @@ void setup_server() {
 
         handle_udp();
 
+        disconnect_udpserver();  // disconnect udp if something happens
+
     } else {
         setvbuf(stdout, NULL, _IONBF, 0);  // make stdout unbuffered
 
         disconnect_udpserver();  // udp socket not needed
 
         handle_tcp();
+
+        disconnect_tcpserver();  // disconnect tcp if something happens
     }
 }
 
@@ -714,9 +837,6 @@ int main(int argc, char const *argv[]){
     change_to_dusers();
 
     setup_server();
-
-    disconnect_udpserver();
-    disconnect_tcpserver();
 
     return 0;
 
